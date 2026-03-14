@@ -1,65 +1,156 @@
-import Image from "next/image";
+import { getDb } from "@/lib/db";
+import { format } from "date-fns";
+import { PRECINCTS } from "@/lib/constants";
+import { Header } from "@/components/header";
+import { CityPulseHero } from "@/components/dashboard/city-pulse-hero";
+import { PrecinctGrid } from "@/components/dashboard/precinct-grid";
+import { ActivitySection } from "@/components/dashboard/activity-section";
+import { TrendChart } from "@/components/dashboard/trend-chart";
+import { TrafficMap } from "@/components/dashboard/traffic-map";
+import { AutoRefresh } from "@/components/dashboard/auto-refresh";
 
-export default function Home() {
+export const revalidate = 300;
+
+export default async function DashboardPage() {
+  const sql = getDb();
+
+  // Get latest date with data
+  const [dateRow] = await sql`SELECT get_latest_data_date() AS latest_date`;
+  const rawDate = dateRow?.latest_date;
+  const chartDate = rawDate instanceof Date
+    ? format(rawDate, "yyyy-MM-dd")
+    : typeof rawDate === "string"
+      ? rawDate.slice(0, 10)
+      : format(new Date(), "yyyy-MM-dd");
+
+  const [pulseRows, activityRows, hourlyRows, dailyRows, sensorRows] = await Promise.all([
+    sql`SELECT * FROM get_city_pulse()`,
+    sql`SELECT * FROM precinct_current_activity ORDER BY total_count DESC`,
+    sql`SELECT * FROM get_precinct_today_hourly(${chartDate}::date)`,
+    sql`SELECT * FROM get_daily_totals(90)`,
+    sql`SELECT * FROM get_sensor_daily_counts(${chartDate}::date)`,
+  ]);
+
+  const pulse = pulseRows[0] ?? { total_current: 0, sensor_count: 0, historical_avg: 0, data_date: null };
+  const activity = activityRows as Array<{
+    precinct_id: string;
+    precinct_name: string;
+    colour: string;
+    total_count: number;
+    sensor_count: number;
+  }>;
+  const hourlyRaw = hourlyRows as Array<{
+    precinct_id: string;
+    hour_of_day: number;
+    total_count: number;
+  }>;
+  const dailyRaw = dailyRows as Array<{
+    day: string;
+    precinct_id: string;
+    total_count: number;
+  }>;
+  const sensorData = sensorRows as Array<{
+    sensor_id: number;
+    sensor_name: string;
+    lat: number;
+    lon: number;
+    precinct_id: string;
+    total_count: number;
+  }>;
+
+  const overallMax = Math.max(...activity.map((a) => Number(a.total_count) || 0), 1);
+
+  const precinctData = activity.map((a) => {
+    const precinct = PRECINCTS.find((p) => p.id === a.precinct_id);
+    const count = Number(a.total_count) || 0;
+    return {
+      id: a.precinct_id,
+      name: precinct?.name ?? a.precinct_name ?? a.precinct_id,
+      colour: precinct?.colour ?? a.colour ?? "#6b7280",
+      count,
+      historicalMax: overallMax,
+      ratio: Number(pulse.historical_avg) > 0
+        ? count / (Number(pulse.historical_avg) / (activity.length || 1))
+        : 0,
+    };
+  });
+
+  // Build hourly chart data
+  const hourlyMap = new Map<number, Record<string, number>>();
+  for (let h = 0; h < 24; h++) {
+    hourlyMap.set(h, { hour: h });
+  }
+  for (const row of hourlyRaw) {
+    const entry = hourlyMap.get(Number(row.hour_of_day))!;
+    entry[row.precinct_id] = Number(row.total_count);
+  }
+  const hourlyData = Array.from(hourlyMap.values()) as Array<{ hour: number; [precinctId: string]: number }>;
+
+  // Build daily trend data: pivot to { date: "2026-03-13", "cbd-core": 1234, ... }
+  const dailyMap = new Map<string, Record<string, number | string>>();
+  for (const row of dailyRaw) {
+    const dayStr = (row.day as unknown) instanceof Date
+      ? format(row.day as unknown as Date, "yyyy-MM-dd")
+      : String(row.day).slice(0, 10);
+    if (!dailyMap.has(dayStr)) {
+      dailyMap.set(dayStr, { date: dayStr });
+    }
+    dailyMap.get(dayStr)![row.precinct_id] = Number(row.total_count);
+  }
+  const dailyData = Array.from(dailyMap.values()).sort((a, b) =>
+    String(a.date).localeCompare(String(b.date))
+  ) as Array<{ date: string; [precinctId: string]: number | string }>;
+
+  // Precinct name/colour map for charts
+  const precinctNames: Record<string, { name: string; colour: string }> = {};
+  for (const p of PRECINCTS) {
+    precinctNames[p.id] = { name: p.name, colour: p.colour };
+  }
+
+  const lastUpdated = format(new Date(), "h:mm a");
+
   return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex min-h-screen w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
+    <>
+      <Header lastUpdated={lastUpdated} />
+      <main className="container mx-auto space-y-6 px-4 py-6">
+        <div className="flex items-center justify-between">
+          <h1 className="sr-only">Melbourne Pulse Dashboard</h1>
+          <AutoRefresh />
+        </div>
+
+        <CityPulseHero
+          totalCurrent={Number(pulse.total_current)}
+          historicalAvg={Number(pulse.historical_avg)}
+          sensorCount={Number(pulse.sensor_count)}
+          dataDate={pulse.data_date
+            ? (pulse.data_date instanceof Date
+              ? format(pulse.data_date, "yyyy-MM-dd")
+              : String(pulse.data_date).slice(0, 10))
+            : null}
         />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
+
+        <section>
+          <h2 className="mb-4 text-lg font-semibold">Precincts</h2>
+          <PrecinctGrid precincts={precinctData} />
+        </section>
+
+        <TrafficMap
+          initialSensors={sensorData}
+          precinctNames={precinctNames}
+          initialDate={chartDate}
+        />
+
+        <ActivitySection
+          initialHourlyData={hourlyData}
+          precinctNames={precinctNames}
+          initialDate={chartDate}
+        />
+
+        <section>
+          <h2 className="mb-4 text-lg font-semibold">90-Day Trend</h2>
+          <TrendChart dailyData={dailyData} precinctNames={precinctNames} />
+        </section>
       </main>
-    </div>
+    </>
   );
 }
