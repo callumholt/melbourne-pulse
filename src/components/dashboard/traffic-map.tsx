@@ -76,11 +76,8 @@ function interpolateSensors(
 }
 
 export function TrafficMap({ initialSensors, precinctNames, initialDate }: TrafficMapProps) {
-  // AIS ship tracking
-  const aisApiKey = typeof window !== "undefined"
-    ? process.env.NEXT_PUBLIC_AIS_API_KEY
-    : undefined;
-  const { vessels, connected: aisConnected, vesselCount } = useAisStream(aisApiKey);
+  // AIS ship tracking (streams via our /api/ais SSE endpoint)
+  const { vessels, connected: aisConnected, vesselCount } = useAisStream(true);
   const [selectedDate, setSelectedDate] = useState(initialDate);
   const [dailySensors, setDailySensors] = useState(initialSensors);
   const [hourlyIndex, setHourlyIndex] = useState<HourlyIndex | null>(null);
@@ -215,8 +212,7 @@ export function TrafficMap({ initialSensors, precinctNames, initialDate }: Traff
             <MapInner sensors={displaySensors} precinctNames={precinctNames} vessels={vessels} />
 
             {/* Vessel tracking indicator */}
-            {aisApiKey && (
-              <div className="absolute left-3 top-3 z-10 flex items-center gap-2 rounded-md bg-black/60 px-2.5 py-1.5 backdrop-blur-sm">
+            <div className="absolute left-3 top-3 z-10 flex items-center gap-2 rounded-md bg-black/60 px-2.5 py-1.5 backdrop-blur-sm">
                 <span className="relative flex h-2 w-2">
                   {aisConnected ? (
                     <>
@@ -233,7 +229,6 @@ export function TrafficMap({ initialSensors, precinctNames, initialDate }: Traff
                     : "Connecting to AIS..."}
                 </span>
               </div>
-            )}
 
             {/* Playback controls overlay */}
             <div className="absolute bottom-0 left-0 right-0 z-10 bg-gradient-to-t from-black/80 to-transparent px-4 pb-4 pt-8">
