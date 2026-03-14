@@ -11,7 +11,7 @@ import {
   getPrecinctDailyTrend,
   getPrecinctStats,
 } from "@/lib/precinct-queries";
-import { Header } from "@/components/header";
+import { Navbar } from "@/components/navbar";
 import { StatsCards } from "@/components/precinct-detail/stats-cards";
 import { HourlyChart } from "@/components/precinct-detail/hourly-chart";
 import { WeeklyHeatmap } from "@/components/precinct-detail/weekly-heatmap";
@@ -59,7 +59,7 @@ export default async function PrecinctDetailPage({ params }: { params: Promise<{
 
   return (
     <>
-      <Header lastUpdated={lastUpdated} />
+      <Navbar />
       <main className="container mx-auto space-y-6 px-4 py-6">
         <div className="flex items-center gap-3">
           <Link

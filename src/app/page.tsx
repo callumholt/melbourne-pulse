@@ -1,7 +1,8 @@
 import { getDb } from "@/lib/db";
 import { format } from "date-fns";
 import { PRECINCTS } from "@/lib/constants";
-import { Header } from "@/components/header";
+import { Navbar } from "@/components/navbar";
+import { WeatherBadge } from "@/components/dashboard/weather-badge";
 import { CityPulseHero } from "@/components/dashboard/city-pulse-hero";
 import { getLatestWeather } from "@/lib/weather";
 import { DashboardClient } from "@/components/dashboard/dashboard-client";
@@ -125,7 +126,14 @@ export default async function DashboardPage() {
 
   return (
     <>
-      <Header lastUpdated={lastUpdated} temperature={weather.temperature} humidity={weather.humidity} />
+      <Navbar rightContent={
+        <>
+          <WeatherBadge temperature={weather.temperature ?? null} humidity={weather.humidity ?? null} />
+          <span className="hidden text-sm text-muted-foreground sm:inline">
+            Updated {lastUpdated}
+          </span>
+        </>
+      } />
       <main className="container mx-auto space-y-6 px-4 py-6">
         <div className="flex items-center justify-between">
           <h1 className="sr-only">Melbourne Pulse Dashboard</h1>
