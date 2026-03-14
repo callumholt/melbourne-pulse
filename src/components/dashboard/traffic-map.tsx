@@ -1,11 +1,18 @@
 "use client";
 
-import { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef, forwardRef, useImperativeHandle } from "react";
 import dynamic from "next/dynamic";
 import { Card, CardContent } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { format, subDays } from "date-fns";
+import { Columns3, Flame, TreePine, Ship, Users, Filter, Maximize2, Minimize2 } from "lucide-react";
 import { useAisStream } from "@/lib/use-ais-stream";
+import { useVesselTrails } from "@/lib/use-vessel-trails";
+import { useDeviceType } from "@/lib/use-device-type";
+import { useTreeLayer } from "@/lib/use-tree-layer";
+import { PRECINCTS } from "@/lib/constants";
+import type { MapInnerHandle, LayerMode } from "./traffic-map-inner";
+import type { Map2DHandle } from "./traffic-map-2d";
 
 interface SensorData {
   sensor_id: number;
@@ -33,9 +40,11 @@ interface TrafficMapProps {
   initialSensors: SensorData[];
   precinctNames: Record<string, { name: string; colour: string }>;
   initialDate: string;
+  theme?: "dark" | "light";
 }
 
 const MapInner = dynamic(() => import("./traffic-map-inner"), { ssr: false });
+const MapInner2D = dynamic(() => import("./traffic-map-2d"), { ssr: false });
 
 function formatHour(hour: number): string {
   const h = Math.floor(hour);
@@ -75,19 +84,44 @@ function interpolateSensors(
   });
 }
 
-export function TrafficMap({ initialSensors, precinctNames, initialDate }: TrafficMapProps) {
-  // AIS ship tracking (streams via our /api/ais SSE endpoint)
-  const { vessels, connected: aisConnected, vesselCount } = useAisStream(true);
+export interface TrafficMapHandle {
+  flyTo: (lat: number, lon: number, zoom?: number) => void;
+}
+
+export const TrafficMap = forwardRef<TrafficMapHandle, TrafficMapProps>(function TrafficMap({ initialSensors, precinctNames, initialDate, theme = "dark" }, outerRef) {
+  // Device detection for 2D fallback
+  const { isMobile } = useDeviceType();
+
+  // AIS ship tracking (disable on mobile to save resources)
+  const { vessels, connected: aisConnected, vesselCount } = useAisStream(!isMobile);
+  const vesselTrails = useVesselTrails(vessels, !isMobile);
+
+  // Map refs for flyTo
+  const mapRef = useRef<MapInnerHandle>(null);
+  const map2DRef = useRef<Map2DHandle>(null);
+
   const [selectedDate, setSelectedDate] = useState(initialDate);
   const [dailySensors, setDailySensors] = useState(initialSensors);
   const [hourlyIndex, setHourlyIndex] = useState<HourlyIndex | null>(null);
   const [loading, setLoading] = useState(false);
+  const [layerMode, setLayerMode] = useState<LayerMode>("columns");
+  const [visibleLayers, setVisibleLayers] = useState({ sensors: true, vessels: true, trees: false });
+  const [precinctFilter, setPrecinctFilter] = useState<string | null>(null);
+  const [showFilters, setShowFilters] = useState(false);
+  const [expanded, setExpanded] = useState(false);
 
-  // Playback state - continuous float time
+  // Tree layer data (loaded on demand)
+  const { trees } = useTreeLayer(visibleLayers.trees, precinctFilter ?? undefined);
+
+  const toggleLayer = (layer: keyof typeof visibleLayers) => {
+    setVisibleLayers((prev) => ({ ...prev, [layer]: !prev[layer] }));
+  };
+
+  // Playback state
   const [mode, setMode] = useState<"daily" | "hourly">("daily");
   const [currentTime, setCurrentTime] = useState(0);
   const [playing, setPlaying] = useState(false);
-  const [playSpeed, setPlaySpeed] = useState(1); // hours per second
+  const [playSpeed, setPlaySpeed] = useState(1);
   const rafRef = useRef<number | null>(null);
   const lastFrameRef = useRef<number>(0);
 
@@ -148,7 +182,7 @@ export function TrafficMap({ initialSensors, precinctNames, initialDate }: Traff
     lastFrameRef.current = performance.now();
 
     const tick = (now: number) => {
-      const delta = (now - lastFrameRef.current) / 1000; // seconds
+      const delta = (now - lastFrameRef.current) / 1000;
       lastFrameRef.current = now;
 
       setCurrentTime((t) => {
@@ -170,7 +204,7 @@ export function TrafficMap({ initialSensors, precinctNames, initialDate }: Traff
     };
   }, [playing, mode, playSpeed]);
 
-  // Build interpolated sensor data for current time
+  // Build interpolated sensor data
   const displaySensors = useMemo((): SensorData[] => {
     if (mode === "daily" || !hourlyIndex) return dailySensors;
     return interpolateSensors(dailySensors, hourlyIndex, currentTime);
@@ -189,27 +223,156 @@ export function TrafficMap({ initialSensors, precinctNames, initialDate }: Traff
     }
   };
 
+  // Expose flyTo for precinct card clicks (works with both 2D and 3D)
+  useImperativeHandle(outerRef, () => ({
+    flyTo: (lat: number, lon: number, zoom?: number) => {
+      mapRef.current?.flyTo(lat, lon, zoom);
+      map2DRef.current?.flyTo(lat, lon, zoom);
+    },
+  }));
+
   return (
     <section>
       <div className="mb-4 flex items-center justify-between">
         <h2 className="text-lg font-semibold">Sensor Map</h2>
-        <Select value={selectedDate} onValueChange={(v) => v && setSelectedDate(v)}>
-          <SelectTrigger className="w-[180px]">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {dateOptions.map((opt) => (
-              <SelectItem key={opt.value} value={opt.value}>
-                {opt.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <div className="flex items-center gap-2">
+          {/* Layer mode toggle */}
+          <div className="flex rounded-md border border-border/40">
+            <button
+              onClick={() => setLayerMode("columns")}
+              className={`flex items-center gap-1 rounded-l-md px-2.5 py-1.5 text-xs font-medium transition-colors ${
+                layerMode === "columns"
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:bg-accent hover:text-foreground"
+              }`}
+              title="3D columns"
+            >
+              <Columns3 className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">3D</span>
+            </button>
+            <button
+              onClick={() => setLayerMode("heatmap")}
+              className={`flex items-center gap-1 rounded-r-md px-2.5 py-1.5 text-xs font-medium transition-colors ${
+                layerMode === "heatmap"
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:bg-accent hover:text-foreground"
+              }`}
+              title="Heatmap"
+            >
+              <Flame className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Heat</span>
+            </button>
+          </div>
+
+          {/* Filters toggle */}
+          <button
+            onClick={() => setShowFilters(!showFilters)}
+            className={`flex items-center gap-1 rounded-md border border-border/40 px-2.5 py-1.5 text-xs font-medium transition-colors ${
+              showFilters ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground"
+            }`}
+            title="Filters"
+          >
+            <Filter className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">Filters</span>
+          </button>
+
+          {/* Expand/collapse toggle */}
+          <button
+            onClick={() => setExpanded(!expanded)}
+            className="flex items-center gap-1 rounded-md border border-border/40 px-2.5 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            title={expanded ? "Collapse map" : "Expand map"}
+          >
+            {expanded ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
+          </button>
+
+          <Select value={selectedDate} onValueChange={(v) => v && setSelectedDate(v)}>
+            <SelectTrigger className="w-[180px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {dateOptions.map((opt) => (
+                <SelectItem key={opt.value} value={opt.value}>
+                  {opt.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        {/* Filter panel */}
+        {showFilters && (
+          <div className="mb-3 flex flex-wrap items-center gap-2 rounded-md border border-border/40 bg-card p-3">
+            {/* Layer toggles */}
+            <span className="text-xs font-medium text-muted-foreground">Layers:</span>
+            <button
+              onClick={() => toggleLayer("sensors")}
+              className={`flex items-center gap-1 rounded-md px-2 py-1 text-xs transition-colors ${
+                visibleLayers.sensors ? "bg-blue-500/20 text-blue-400" : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              <Users className="h-3 w-3" />
+              Pedestrians
+            </button>
+            <button
+              onClick={() => toggleLayer("vessels")}
+              className={`flex items-center gap-1 rounded-md px-2 py-1 text-xs transition-colors ${
+                visibleLayers.vessels ? "bg-cyan-500/20 text-cyan-400" : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              <Ship className="h-3 w-3" />
+              Vessels
+            </button>
+            <button
+              onClick={() => toggleLayer("trees")}
+              className={`flex items-center gap-1 rounded-md px-2 py-1 text-xs transition-colors ${
+                visibleLayers.trees ? "bg-green-500/20 text-green-400" : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              <TreePine className="h-3 w-3" />
+              Trees
+            </button>
+
+            <span className="mx-1 text-border">|</span>
+
+            {/* Precinct filter */}
+            <span className="text-xs font-medium text-muted-foreground">Precinct:</span>
+            <select
+              value={precinctFilter ?? ""}
+              onChange={(e) => setPrecinctFilter(e.target.value || null)}
+              className="rounded-md border border-border bg-background px-2 py-1 text-xs focus:border-primary focus:outline-none"
+            >
+              <option value="">All</option>
+              {PRECINCTS.map((p) => (
+                <option key={p.id} value={p.id}>{p.name}</option>
+              ))}
+            </select>
+          </div>
+        )}
       </div>
       <Card className="border-border/40">
         <CardContent className="p-0">
-          <div className={`relative h-[500px] w-full overflow-hidden rounded-lg ${loading ? "opacity-50 transition-opacity" : ""}`}>
-            <MapInner sensors={displaySensors} precinctNames={precinctNames} vessels={vessels} />
+          <div className={`relative w-full overflow-hidden rounded-lg transition-[height] duration-300 ${expanded ? "h-[80vh]" : "h-[400px] sm:h-[500px]"} ${loading ? "opacity-50 transition-opacity" : ""}`}>
+            {isMobile ? (
+              <MapInner2D
+                ref={map2DRef}
+                sensors={displaySensors}
+                precinctNames={precinctNames}
+                theme={theme}
+              />
+            ) : (
+              <MapInner
+                ref={mapRef}
+                sensors={displaySensors}
+                precinctNames={precinctNames}
+                vessels={vessels}
+                vesselTrails={vesselTrails}
+                trees={trees}
+                layerMode={layerMode}
+                currentHour={mode === "hourly" ? currentTime : null}
+                theme={theme}
+                visibleLayers={visibleLayers}
+                precinctFilter={precinctFilter}
+              />
+            )}
 
             {/* Vessel tracking indicator */}
             <div className="absolute left-3 top-3 z-10 flex items-center gap-2 rounded-md bg-black/60 px-2.5 py-1.5 backdrop-blur-sm">
@@ -310,4 +473,4 @@ export function TrafficMap({ initialSensors, precinctNames, initialDate }: Traff
       </Card>
     </section>
   );
-}
+});

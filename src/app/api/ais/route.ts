@@ -1,4 +1,5 @@
 import WebSocket from "ws";
+import { getDb } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -11,11 +12,83 @@ const PORT_PHILLIP_BBOX = [
 
 const AIS_WS_URL = "wss://stream.aisstream.io/v0/stream";
 
-export async function GET() {
+// Rate limiting: track concurrent SSE connections per IP
+const connectionCounts = new Map<string, number>();
+const MAX_CONNECTIONS_PER_IP = 3;
+
+// Batch buffer for vessel position inserts
+interface PositionRecord {
+  mmsi: string;
+  name: string;
+  lat: number;
+  lon: number;
+  course: number;
+  speed: number;
+  heading: number;
+}
+
+const positionBuffer: PositionRecord[] = [];
+let flushTimer: ReturnType<typeof setInterval> | null = null;
+
+async function flushPositions() {
+  if (positionBuffer.length === 0) return;
+
+  const batch = positionBuffer.splice(0, positionBuffer.length);
+
+  try {
+    const sql = getDb();
+    // Build batch insert
+    const placeholders = batch
+      .map((_, i) => {
+        const base = i * 7;
+        return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7})`;
+      })
+      .join(", ");
+
+    const params = batch.flatMap((p) => [
+      p.mmsi,
+      p.name || null,
+      p.lat,
+      p.lon,
+      p.course,
+      p.speed,
+      p.heading,
+    ]);
+
+    await sql.query(
+      `INSERT INTO vessel_positions (mmsi, vessel_name, lat, lon, course, speed, heading)
+       VALUES ${placeholders}`,
+      params,
+    );
+  } catch {
+    // Silently fail - vessel history is non-critical
+  }
+}
+
+// Start flush timer if not already running
+function ensureFlushTimer() {
+  if (!flushTimer) {
+    flushTimer = setInterval(flushPositions, 5000);
+  }
+}
+
+export async function GET(req: Request) {
   const apiKey = process.env.AIS_API_KEY;
   if (!apiKey) {
     return new Response("AIS_API_KEY not configured", { status: 503 });
   }
+
+  // Rate limit by IP
+  const forwarded = req.headers.get("x-forwarded-for");
+  const ip = forwarded?.split(",")[0]?.trim() ?? "unknown";
+  const currentCount = connectionCounts.get(ip) ?? 0;
+
+  if (currentCount >= MAX_CONNECTIONS_PER_IP) {
+    return new Response("Too many concurrent AIS connections", { status: 429 });
+  }
+
+  connectionCounts.set(ip, currentCount + 1);
+  ensureFlushTimer();
 
   const encoder = new TextEncoder();
   let ws: WebSocket | null = null;
@@ -84,20 +157,38 @@ export async function GET() {
 
           if (!msg) return;
 
+          const lat = meta.latitude ?? msg.Latitude;
+          const lon = meta.longitude ?? msg.Longitude;
+          const sog = msg.Sog ?? 0;
+          const cog = msg.Cog ?? 0;
+          const heading = msg.TrueHeading ?? msg.Cog ?? 0;
+          const name = meta.ShipName?.trim() || "";
+
           const event = {
             type: "position",
             mmsi: meta.MMSI,
-            name: meta.ShipName?.trim() || "",
-            lat: meta.latitude ?? msg.Latitude,
-            lon: meta.longitude ?? msg.Longitude,
-            sog: msg.Sog ?? 0,
-            cog: msg.Cog ?? 0,
-            heading: msg.TrueHeading ?? msg.Cog ?? 0,
+            name,
+            lat,
+            lon,
+            sog,
+            cog,
+            heading,
           };
 
           controller.enqueue(
             encoder.encode(`data: ${JSON.stringify(event)}\n\n`),
           );
+
+          // Buffer position for batch insert
+          positionBuffer.push({
+            mmsi: String(meta.MMSI),
+            name,
+            lat,
+            lon,
+            course: cog,
+            speed: sog,
+            heading,
+          });
         } catch {
           // skip malformed
         }
@@ -120,6 +211,14 @@ export async function GET() {
       });
     },
     cancel() {
+      // Decrement connection count
+      const count = connectionCounts.get(ip) ?? 1;
+      if (count <= 1) {
+        connectionCounts.delete(ip);
+      } else {
+        connectionCounts.set(ip, count - 1);
+      }
+
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.close();
       }

@@ -1,13 +1,18 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useImperativeHandle, forwardRef, useMemo } from "react";
 import { Map as MapLibre } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { Deck } from "@deck.gl/core";
-import { ColumnLayer, ScatterplotLayer } from "@deck.gl/layers";
+import { ColumnLayer, ScatterplotLayer, PathLayer } from "@deck.gl/layers";
+import { HeatmapLayer } from "@deck.gl/aggregation-layers";
+import { LightingEffect, AmbientLight, DirectionalLight } from "@deck.gl/core";
+import { getSunState } from "@/lib/sun-position";
 import type { Vessel } from "@/lib/use-ais-stream";
+import type { VesselTrail } from "@/lib/use-vessel-trails";
+import type { TreeMapPoint } from "@/lib/use-tree-layer";
 
-interface SensorData {
+export interface SensorData {
   sensor_id: number;
   sensor_name: string;
   lat: number;
@@ -16,10 +21,23 @@ interface SensorData {
   total_count: number;
 }
 
+export type LayerMode = "columns" | "heatmap";
+
+export interface MapInnerHandle {
+  flyTo: (lat: number, lon: number, zoom?: number) => void;
+}
+
 interface MapInnerProps {
   sensors: SensorData[];
   precinctNames: Record<string, { name: string; colour: string }>;
   vessels?: Map<number, Vessel>;
+  vesselTrails?: VesselTrail[];
+  trees?: TreeMapPoint[];
+  layerMode?: LayerMode;
+  currentHour?: number | null;
+  theme?: "dark" | "light";
+  visibleLayers?: { sensors: boolean; vessels: boolean; trees: boolean };
+  precinctFilter?: string | null;
 }
 
 const MELBOURNE_CENTER = { longitude: 144.9631, latitude: -37.8136 };
@@ -30,26 +48,29 @@ const INITIAL_VIEW = {
   bearing: -20,
 };
 
-const DARK_STYLE = {
-  version: 8 as const,
-  sources: {
-    "carto-dark": {
-      type: "raster" as const,
-      tiles: ["https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png"],
-      tileSize: 256,
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/">CARTO</a>',
+function makeStyle(theme: "dark" | "light") {
+  const tileVariant = theme === "dark" ? "dark_all" : "light_all";
+  return {
+    version: 8 as const,
+    sources: {
+      "carto-tiles": {
+        type: "raster" as const,
+        tiles: [`https://a.basemaps.cartocdn.com/${tileVariant}/{z}/{x}/{y}@2x.png`],
+        tileSize: 256,
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/">CARTO</a>',
+      },
     },
-  },
-  layers: [
-    {
-      id: "carto-dark-layer",
-      type: "raster" as const,
-      source: "carto-dark",
-      minzoom: 0,
-      maxzoom: 20,
-    },
-  ],
-};
+    layers: [
+      {
+        id: "carto-layer",
+        type: "raster" as const,
+        source: "carto-tiles",
+        minzoom: 0,
+        maxzoom: 20,
+      },
+    ],
+  };
+}
 
 // AIS ship type codes -> human-readable categories
 function getShipTypeName(type: number | null): string | null {
@@ -83,13 +104,70 @@ function hexToRgb(hex: string): [number, number, number] {
 
 type TooltipData =
   | { type: "sensor"; x: number; y: number; sensor: SensorData }
-  | { type: "vessel"; x: number; y: number; vessel: Vessel };
+  | { type: "vessel"; x: number; y: number; vessel: Vessel }
+  | { type: "tree"; x: number; y: number; tree: TreeMapPoint };
 
-export default function MapInner({ sensors, precinctNames, vessels }: MapInnerProps) {
+const DEFAULT_VISIBLE = { sensors: true, vessels: true, trees: false };
+
+const MapInner = forwardRef<MapInnerHandle, MapInnerProps>(function MapInner(
+  { sensors, precinctNames, vessels, vesselTrails, trees, layerMode = "columns", currentHour, theme = "dark", visibleLayers = DEFAULT_VISIBLE, precinctFilter },
+  ref
+) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MapLibre | null>(null);
   const deckRef = useRef<Deck | null>(null);
   const [tooltip, setTooltip] = useState<TooltipData | null>(null);
+  const currentThemeRef = useRef(theme);
+
+  // Expose flyTo via ref
+  useImperativeHandle(ref, () => ({
+    flyTo: (lat: number, lon: number, zoom = 16) => {
+      if (mapRef.current) {
+        mapRef.current.flyTo({
+          center: [lon, lat],
+          zoom,
+          pitch: 55,
+          bearing: -20,
+          duration: 1500,
+        });
+      }
+    },
+  }));
+
+  // Compute lighting effect based on current hour
+  const lightingEffect = useMemo(() => {
+    if (currentHour == null) {
+      // Default daytime lighting
+      const ambient = new AmbientLight({ color: [255, 255, 255], intensity: 1.0 });
+      const dir = new DirectionalLight({
+        color: [255, 245, 230],
+        intensity: 1.2,
+        direction: [-1, -3, -1],
+      });
+      return new LightingEffect({ ambient, directional: dir });
+    }
+
+    const sun = getSunState(currentHour);
+    const ambient = new AmbientLight({
+      color: [255, 255, 255],
+      intensity: 0.3 + sun.ambientLight * 0.5,
+    });
+
+    // Convert sun azimuth/altitude to directional vector
+    const az = sun.azimuth;
+    const alt = Math.max(sun.altitude, 0.05);
+    const dir = new DirectionalLight({
+      color: sun.sunColor,
+      intensity: 0.5 + sun.ambientLight * 1.5,
+      direction: [
+        -Math.sin(az) * Math.cos(alt),
+        -Math.cos(az) * Math.cos(alt),
+        -Math.sin(alt),
+      ],
+    });
+
+    return new LightingEffect({ ambient, directional: dir });
+  }, [currentHour]);
 
   // Initialise map and deck
   useEffect(() => {
@@ -97,7 +175,7 @@ export default function MapInner({ sensors, precinctNames, vessels }: MapInnerPr
 
     const map = new MapLibre({
       container: containerRef.current,
-      style: DARK_STYLE,
+      style: makeStyle(theme),
       center: [INITIAL_VIEW.longitude, INITIAL_VIEW.latitude],
       zoom: INITIAL_VIEW.zoom,
       pitch: INITIAL_VIEW.pitch,
@@ -110,6 +188,7 @@ export default function MapInner({ sensors, precinctNames, vessels }: MapInnerPr
       initialViewState: INITIAL_VIEW,
       controller: false,
       layers: [],
+      effects: [lightingEffect],
       getTooltip: () => null,
     });
 
@@ -136,53 +215,167 @@ export default function MapInner({ sensors, precinctNames, vessels }: MapInnerPr
       mapRef.current = null;
       deckRef.current = null;
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Update map style when theme changes
+  useEffect(() => {
+    if (!mapRef.current || theme === currentThemeRef.current) return;
+    currentThemeRef.current = theme;
+    mapRef.current.setStyle(makeStyle(theme));
+  }, [theme]);
+
+  // Update base map opacity based on time of day
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || currentHour == null) return;
+
+    const sun = getSunState(currentHour);
+    const opacity = 0.3 + sun.ambientLight * 0.7;
+
+    const setOpacity = () => {
+      if (map.getLayer("carto-layer")) {
+        map.setPaintProperty("carto-layer", "raster-opacity", opacity);
+      }
+    };
+
+    if (map.isStyleLoaded()) {
+      setOpacity();
+    } else {
+      map.once("styledata", setOpacity);
+    }
+  }, [currentHour]);
+
+  // Update lighting effect
+  useEffect(() => {
+    if (deckRef.current) {
+      deckRef.current.setProps({ effects: [lightingEffect] });
+    }
+  }, [lightingEffect]);
 
   // Update layers when data changes
   useEffect(() => {
     if (!deckRef.current) return;
 
-    const maxCount = Math.max(...sensors.map((s) => Number(s.total_count)), 1);
+    // Apply precinct filter to sensors
+    const filteredSensors = precinctFilter
+      ? sensors.filter((s) => s.precinct_id === precinctFilter)
+      : sensors;
 
-    const sensorLayer = new ColumnLayer<SensorData>({
-      id: "sensor-columns",
-      data: sensors,
-      diskResolution: 12,
-      radius: 25,
-      extruded: true,
-      pickable: true,
-      elevationScale: 1,
-      getPosition: (d) => [d.lon, d.lat],
-      getFillColor: (d) => {
-        const count = Number(d.total_count);
-        if (count === 0) return [107, 114, 128, 40] as [number, number, number, number];
-        const colour = precinctNames[d.precinct_id]?.colour ?? "#6b7280";
-        const rgb = hexToRgb(colour);
-        const ratio = count / maxCount;
-        const alpha = Math.floor(140 + ratio * 115);
-        return [...rgb, alpha] as [number, number, number, number];
-      },
-      getElevation: (d) => {
-        const ratio = Number(d.total_count) / maxCount;
-        return Math.max(ratio * 800, 2);
-      },
-      onHover: (info) => {
-        if (info.object) {
-          setTooltip({ type: "sensor", x: info.x, y: info.y, sensor: info.object });
-        } else {
-          setTooltip((prev) => prev?.type === "sensor" ? null : prev);
-        }
-      },
-      updateTriggers: {
-        getFillColor: [sensors],
-        getElevation: [sensors],
-      },
-    });
+    const maxCount = Math.max(...filteredSensors.map((s) => Number(s.total_count)), 1);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const layers: any[] = [];
 
-    const layers = [sensorLayer];
+    if (visibleLayers.sensors && layerMode === "columns") {
+      const sensorLayer = new ColumnLayer<SensorData>({
+        id: "sensor-columns",
+        data: filteredSensors,
+        diskResolution: 12,
+        radius: 25,
+        extruded: true,
+        pickable: true,
+        elevationScale: 1,
+        getPosition: (d) => [d.lon, d.lat],
+        getFillColor: (d) => {
+          const count = Number(d.total_count);
+          if (count === 0) return [107, 114, 128, 40] as [number, number, number, number];
+          const colour = precinctNames[d.precinct_id]?.colour ?? "#6b7280";
+          const rgb = hexToRgb(colour);
+          const ratio = count / maxCount;
+          const alpha = Math.floor(140 + ratio * 115);
+          return [...rgb, alpha] as [number, number, number, number];
+        },
+        getElevation: (d) => {
+          const ratio = Number(d.total_count) / maxCount;
+          return Math.max(ratio * 800, 2);
+        },
+        onHover: (info) => {
+          if (info.object) {
+            setTooltip({ type: "sensor", x: info.x, y: info.y, sensor: info.object });
+          } else {
+            setTooltip((prev) => prev?.type === "sensor" ? null : prev);
+          }
+        },
+        updateTriggers: {
+          getFillColor: [sensors],
+          getElevation: [sensors],
+        },
+      });
+      layers.push(sensorLayer);
+    } else if (visibleLayers.sensors) {
+      // Heatmap layer
+      const heatmapLayer = new HeatmapLayer<SensorData>({
+        id: "sensor-heatmap",
+        data: filteredSensors.filter((s) => Number(s.total_count) > 0),
+        getPosition: (d) => [d.lon, d.lat],
+        getWeight: (d) => Number(d.total_count),
+        radiusPixels: 60,
+        intensity: 1,
+        threshold: 0.05,
+        colorRange: [
+          [1, 152, 189],
+          [73, 227, 206],
+          [216, 254, 181],
+          [254, 237, 177],
+          [254, 173, 84],
+          [209, 55, 78],
+        ],
+      });
+      layers.push(heatmapLayer);
+    }
 
-    // Vessel layer
-    if (vessels && vessels.size > 0) {
+    // Tree layer
+    if (visibleLayers.trees && trees && trees.length > 0) {
+      const treeLayer = new ScatterplotLayer<TreeMapPoint>({
+        id: "tree-markers",
+        data: precinctFilter ? trees.filter((t) => t.precinct_id === precinctFilter) : trees,
+        pickable: true,
+        filled: true,
+        radiusScale: 1,
+        radiusMinPixels: 2,
+        radiusMaxPixels: 6,
+        getPosition: (d) => [d.lon, d.lat],
+        getRadius: 30,
+        getFillColor: (d) => {
+          // Colour by health/useful life
+          const life = d.useful_life_value ?? 15;
+          if (life > 20) return [34, 197, 94, 180] as [number, number, number, number]; // healthy green
+          if (life > 10) return [250, 204, 21, 160] as [number, number, number, number]; // ageing yellow
+          return [239, 68, 68, 160] as [number, number, number, number]; // declining red
+        },
+        onHover: (info) => {
+          if (info.object) {
+            setTooltip({ type: "tree", x: info.x, y: info.y, tree: info.object });
+          } else {
+            setTooltip((prev) => prev?.type === "tree" ? null : prev);
+          }
+        },
+        updateTriggers: {
+          getFillColor: [trees],
+        },
+      });
+      layers.push(treeLayer);
+    }
+
+    // Vessel trail lines
+    if (visibleLayers.vessels && vesselTrails && vesselTrails.length > 0) {
+      const trailLayer = new PathLayer<VesselTrail>({
+        id: "vessel-trails",
+        data: vesselTrails,
+        getPath: (d) => d.path,
+        getColor: (d) => d.color,
+        getWidth: 2,
+        widthMinPixels: 1,
+        widthMaxPixels: 4,
+        capRounded: true,
+        jointRounded: true,
+        opacity: 0.6,
+      });
+      layers.push(trailLayer);
+    }
+
+    // Vessel markers
+    if (visibleLayers.vessels && vessels && vessels.size > 0) {
       const vesselArray = Array.from(vessels.values());
 
       const vesselLayer = new ScatterplotLayer<Vessel>({
@@ -197,11 +390,9 @@ export default function MapInner({ sensors, precinctNames, vessels }: MapInnerPr
         lineWidthMinPixels: 1,
         getPosition: (d) => [d.lon, d.lat],
         getRadius: (d) => {
-          // Larger for moving vessels
           return d.sog > 1 ? 80 : 50;
         },
         getFillColor: (d) => {
-          // Colour by speed: stationary=amber, slow=cyan, fast=green
           if (d.sog < 0.5) return [245, 158, 11, 200] as [number, number, number, number];
           if (d.sog < 5) return [6, 182, 212, 220] as [number, number, number, number];
           return [34, 197, 94, 230] as [number, number, number, number];
@@ -222,11 +413,11 @@ export default function MapInner({ sensors, precinctNames, vessels }: MapInnerPr
         },
       });
 
-      layers.push(vesselLayer as unknown as typeof sensorLayer);
+      layers.push(vesselLayer);
     }
 
     deckRef.current.setProps({ layers });
-  }, [sensors, precinctNames, vessels]);
+  }, [sensors, precinctNames, vessels, vesselTrails, trees, layerMode, visibleLayers, precinctFilter]);
 
   // Enable pointer events on deck canvas for hover
   useEffect(() => {
@@ -313,6 +504,30 @@ export default function MapInner({ sensors, precinctNames, vessels }: MapInnerPr
           </div>
         );
       })()}
+      {tooltip?.type === "tree" && (() => {
+        const t = tooltip.tree;
+        const life = t.useful_life_value ?? 0;
+        const healthColour = life > 20 ? "text-green-400" : life > 10 ? "text-yellow-400" : "text-red-400";
+        return (
+          <div
+            className="pointer-events-none absolute z-50 rounded-lg border border-border/40 bg-popover px-3 py-2 text-sm text-popover-foreground shadow-lg"
+            style={{ left: tooltip.x + 12, top: tooltip.y - 12 }}
+          >
+            <div className="font-semibold">{t.common_name}</div>
+            <div className="text-xs italic text-muted-foreground">{t.scientific_name}</div>
+            <div className="mt-1 flex items-center gap-2 text-xs">
+              <span className="text-muted-foreground">{t.age_description}</span>
+              {t.useful_life_value != null && (
+                <span className={`font-medium ${healthColour}`}>
+                  {t.useful_life_value}yr lifespan
+                </span>
+              )}
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
-}
+});
+
+export default MapInner;

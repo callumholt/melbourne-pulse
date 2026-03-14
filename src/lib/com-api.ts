@@ -91,4 +91,50 @@ export async function fetchMicroclimateData(): Promise<ComMicroclimateRecord[]> 
   );
 }
 
-export type { ComPedestrianRecord, ComSensorLocation, ComMicroclimateRecord };
+// Urban Forest tree data
+interface ComTreeRecord {
+  com_id: string;
+  common_name: string;
+  scientific_name: string;
+  genus: string;
+  family: string;
+  diameter_breast_height: number;
+  year_planted: string;
+  age_description: string;
+  useful_life_expectency: string;
+  useful_life_expectency_value: number;
+  precinct: string;
+  located_in: string;
+  latitude: number;
+  longitude: number;
+}
+
+export async function fetchTreeData(offset = 0, limit = 100): Promise<{ records: ComTreeRecord[]; total: number }> {
+  const searchParams = new URLSearchParams({
+    limit: String(limit),
+    offset: String(offset),
+    select: "com_id,common_name,scientific_name,genus,family,diameter_breast_height,year_planted,age_description,useful_life_expectency,useful_life_expectency_value,precinct,located_in,latitude,longitude",
+  });
+
+  const url = `${BASE_URL}/trees-with-species-and-dimensions-urban-forest/records?${searchParams}`;
+  const res = await fetch(url, { next: { revalidate: 0 } });
+
+  if (!res.ok) {
+    throw new Error(`CoM API error: ${res.status} for trees dataset`);
+  }
+
+  const data: ComApiResponse<ComTreeRecord> = await res.json();
+  return { records: data.results, total: data.total_count };
+}
+
+export async function fetchAllTrees(maxRecords = 90000): Promise<ComTreeRecord[]> {
+  return fetchPaginated<ComTreeRecord>(
+    "trees-with-species-and-dimensions-urban-forest",
+    {
+      select: "com_id,common_name,scientific_name,genus,family,diameter_breast_height,year_planted,age_description,useful_life_expectency,useful_life_expectency_value,precinct,located_in,latitude,longitude",
+    },
+    maxRecords
+  );
+}
+
+export type { ComPedestrianRecord, ComSensorLocation, ComMicroclimateRecord, ComTreeRecord };

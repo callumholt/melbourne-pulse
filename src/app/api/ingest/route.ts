@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getDb } from "@/lib/db";
-import { fetchPedestrianData } from "@/lib/com-api";
+import { fetchPedestrianData, fetchMicroclimateData } from "@/lib/com-api";
+import { detectAnomalies, storeAnomalies } from "@/lib/anomaly-detection";
 import { format } from "date-fns";
 
 export const maxDuration = 60;
@@ -83,6 +84,52 @@ export async function GET(req: NextRequest) {
       VALUES ('pedestrian_counts', ${records.length}, ${inserted}, ${skipped}, ${durationMs})
     `;
 
+    // Also ingest microclimate data
+    let microInserted = 0;
+    try {
+      const microRecords = await fetchMicroclimateData();
+      const microBatchSize = 50;
+
+      for (let i = 0; i < microRecords.length; i += microBatchSize) {
+        const batch = microRecords.slice(i, i + microBatchSize);
+        const placeholders = batch
+          .map((_, idx) => {
+            const base = idx * 6;
+            return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6})`;
+          })
+          .join(", ");
+
+        const params = batch.flatMap((r) => [
+          r.site_id,
+          r.site_description,
+          r.type,
+          r.local_time,
+          r.value,
+          r.units,
+        ]);
+
+        const microResult = await sql.query(
+          `INSERT INTO microclimate_readings (site_id, site_description, type, recorded_at, value, units)
+           VALUES ${placeholders}
+           ON CONFLICT (site_id, recorded_at, type) DO NOTHING`,
+          params,
+        );
+        microInserted += microResult.length ?? 0;
+      }
+    } catch (microErr) {
+      console.error("Microclimate ingestion error:", microErr);
+    }
+
+    // Run anomaly detection after ingestion
+    let anomalyCount = 0;
+    try {
+      const anomalies = await detectAnomalies();
+      await storeAnomalies(anomalies);
+      anomalyCount = anomalies.length;
+    } catch (anomalyErr) {
+      console.error("Anomaly detection error:", anomalyErr);
+    }
+
     return NextResponse.json({
       message: "Ingestion complete",
       date: today,
@@ -90,6 +137,8 @@ export async function GET(req: NextRequest) {
       inserted,
       skipped,
       duration_ms: durationMs,
+      microclimate_inserted: microInserted,
+      anomalies_detected: anomalyCount,
     });
   } catch (err) {
     const error = err instanceof Error ? err.message : "Unknown error";

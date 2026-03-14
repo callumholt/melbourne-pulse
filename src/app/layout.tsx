@@ -10,6 +10,7 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL("https://melbourne-pulse.vercel.app"),
   title: "Melbourne Pulse",
   description: "Real-time city activity dashboard for Melbourne",
 };
@@ -20,7 +21,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className="dark">
+    <html lang="en" className="dark" suppressHydrationWarning>
       <body className={`${inter.variable} antialiased`}>
         <TooltipProvider>
           {children}

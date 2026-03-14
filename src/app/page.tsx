@@ -3,11 +3,12 @@ import { format } from "date-fns";
 import { PRECINCTS } from "@/lib/constants";
 import { Header } from "@/components/header";
 import { CityPulseHero } from "@/components/dashboard/city-pulse-hero";
-import { PrecinctGrid } from "@/components/dashboard/precinct-grid";
+import { getLatestWeather } from "@/lib/weather";
+import { DashboardClient } from "@/components/dashboard/dashboard-client";
 import { ActivitySection } from "@/components/dashboard/activity-section";
 import { TrendChart } from "@/components/dashboard/trend-chart";
-import { TrafficMap } from "@/components/dashboard/traffic-map";
 import { AutoRefresh } from "@/components/dashboard/auto-refresh";
+import { getPrecinctTreeStats } from "@/lib/tree-queries";
 
 export const revalidate = 300;
 
@@ -22,6 +23,9 @@ export default async function DashboardPage() {
     : typeof rawDate === "string"
       ? rawDate.slice(0, 10)
       : format(new Date(), "yyyy-MM-dd");
+
+  // Fetch weather (non-critical, catch errors)
+  const weather = await getLatestWeather().catch(() => ({ temperature: null, humidity: null, rain: false, lastUpdated: null }));
 
   const [pulseRows, activityRows, hourlyRows, dailyRows, sensorRows] = await Promise.all([
     sql`SELECT * FROM get_city_pulse()`,
@@ -58,11 +62,16 @@ export default async function DashboardPage() {
     total_count: number;
   }>;
 
+  // Fetch tree stats (non-critical)
+  const treeStats = await getPrecinctTreeStats().catch(() => []);
+  const treeStatsMap = new Map(treeStats.map((t) => [t.precinct_id, t]));
+
   const overallMax = Math.max(...activity.map((a) => Number(a.total_count) || 0), 1);
 
   const precinctData = activity.map((a) => {
     const precinct = PRECINCTS.find((p) => p.id === a.precinct_id);
     const count = Number(a.total_count) || 0;
+    const trees = treeStatsMap.get(a.precinct_id);
     return {
       id: a.precinct_id,
       name: precinct?.name ?? a.precinct_name ?? a.precinct_id,
@@ -72,6 +81,11 @@ export default async function DashboardPage() {
       ratio: Number(pulse.historical_avg) > 0
         ? count / (Number(pulse.historical_avg) / (activity.length || 1))
         : 0,
+      treeStats: trees ? {
+        tree_count: trees.tree_count,
+        species_count: trees.species_count,
+        health_score: trees.health_score,
+      } : null,
     };
   });
 
@@ -86,7 +100,7 @@ export default async function DashboardPage() {
   }
   const hourlyData = Array.from(hourlyMap.values()) as Array<{ hour: number; [precinctId: string]: number }>;
 
-  // Build daily trend data: pivot to { date: "2026-03-13", "cbd-core": 1234, ... }
+  // Build daily trend data
   const dailyMap = new Map<string, Record<string, number | string>>();
   for (const row of dailyRaw) {
     const dayStr = (row.day as unknown) instanceof Date
@@ -111,7 +125,7 @@ export default async function DashboardPage() {
 
   return (
     <>
-      <Header lastUpdated={lastUpdated} />
+      <Header lastUpdated={lastUpdated} temperature={weather.temperature} humidity={weather.humidity} />
       <main className="container mx-auto space-y-6 px-4 py-6">
         <div className="flex items-center justify-between">
           <h1 className="sr-only">Melbourne Pulse Dashboard</h1>
@@ -129,15 +143,11 @@ export default async function DashboardPage() {
             : null}
         />
 
-        <section>
-          <h2 className="mb-4 text-lg font-semibold">Precincts</h2>
-          <PrecinctGrid precincts={precinctData} />
-        </section>
-
-        <TrafficMap
-          initialSensors={sensorData}
+        <DashboardClient
+          precinctData={precinctData}
+          sensorData={sensorData}
           precinctNames={precinctNames}
-          initialDate={chartDate}
+          chartDate={chartDate}
         />
 
         <ActivitySection
