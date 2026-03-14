@@ -11,6 +11,14 @@ export interface Vessel {
   cog: number; // course over ground (degrees)
   heading: number;
   lastUpdate: number; // timestamp ms
+  // Static data (populated when ShipStaticData message received)
+  imo: number | null;
+  callSign: string | null;
+  destination: string | null;
+  shipType: number | null;
+  length: number | null;
+  width: number | null;
+  draught: number | null;
 }
 
 const STALE_TIMEOUT = 300_000; // remove vessels not seen in 5 min
@@ -59,21 +67,52 @@ export function useAisStream(enabled: boolean) {
               const event = JSON.parse(dataLine.slice(6));
 
               if (event.type === "position") {
+                const existing = vesselsRef.current.get(event.mmsi);
                 const vessel: Vessel = {
                   mmsi: event.mmsi,
-                  name: event.name || `MMSI ${event.mmsi}`,
+                  name: event.name || existing?.name || `MMSI ${event.mmsi}`,
                   lat: event.lat,
                   lon: event.lon,
                   sog: event.sog,
                   cog: event.cog,
                   heading: event.heading,
                   lastUpdate: Date.now(),
+                  // Preserve static data from previous messages
+                  imo: existing?.imo ?? null,
+                  callSign: existing?.callSign ?? null,
+                  destination: existing?.destination ?? null,
+                  shipType: existing?.shipType ?? null,
+                  length: existing?.length ?? null,
+                  width: existing?.width ?? null,
+                  draught: existing?.draught ?? null,
                 };
                 vesselsRef.current.set(event.mmsi, vessel);
               } else if (event.type === "static") {
                 const existing = vesselsRef.current.get(event.mmsi);
-                if (existing && event.name) {
-                  existing.name = event.name;
+                if (existing) {
+                  if (event.name) existing.name = event.name;
+                  if (event.imo) existing.imo = event.imo;
+                  if (event.callSign) existing.callSign = event.callSign;
+                  if (event.destination) existing.destination = event.destination;
+                  if (event.shipType != null) existing.shipType = event.shipType;
+                  if (event.length) existing.length = event.length;
+                  if (event.width) existing.width = event.width;
+                  if (event.draught) existing.draught = event.draught;
+                } else {
+                  // Create a placeholder vessel from static data
+                  vesselsRef.current.set(event.mmsi, {
+                    mmsi: event.mmsi,
+                    name: event.name || `MMSI ${event.mmsi}`,
+                    lat: 0, lon: 0, sog: 0, cog: 0, heading: 0,
+                    lastUpdate: Date.now(),
+                    imo: event.imo ?? null,
+                    callSign: event.callSign ?? null,
+                    destination: event.destination ?? null,
+                    shipType: event.shipType ?? null,
+                    length: event.length ?? null,
+                    width: event.width ?? null,
+                    draught: event.draught ?? null,
+                  });
                 }
               }
             } catch {

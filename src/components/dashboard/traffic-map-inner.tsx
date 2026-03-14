@@ -51,6 +51,29 @@ const DARK_STYLE = {
   ],
 };
 
+// AIS ship type codes -> human-readable categories
+function getShipTypeName(type: number | null): string | null {
+  if (type == null) return null;
+  if (type >= 20 && type <= 29) return "Wing in Ground";
+  if (type === 30) return "Fishing";
+  if (type === 31 || type === 32) return "Towing";
+  if (type === 33) return "Dredging";
+  if (type === 34) return "Diving Ops";
+  if (type === 35) return "Military";
+  if (type === 36) return "Sailing";
+  if (type === 37) return "Pleasure Craft";
+  if (type >= 40 && type <= 49) return "High Speed Craft";
+  if (type === 50) return "Pilot Vessel";
+  if (type === 51) return "Search & Rescue";
+  if (type === 52) return "Tug";
+  if (type === 53) return "Port Tender";
+  if (type === 55) return "Law Enforcement";
+  if (type >= 60 && type <= 69) return "Passenger";
+  if (type >= 70 && type <= 79) return "Cargo";
+  if (type >= 80 && type <= 89) return "Tanker";
+  return "Other";
+}
+
 function hexToRgb(hex: string): [number, number, number] {
   const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
   return result
@@ -234,25 +257,62 @@ export default function MapInner({ sensors, precinctNames, vessels }: MapInnerPr
           </div>
         </div>
       )}
-      {tooltip?.type === "vessel" && (
-        <div
-          className="pointer-events-none absolute z-50 rounded-lg border border-border/40 bg-popover px-3 py-2 text-sm text-popover-foreground shadow-lg"
-          style={{ left: tooltip.x + 12, top: tooltip.y - 12 }}
-        >
-          <div className="font-semibold">{tooltip.vessel.name}</div>
-          <div className="text-xs text-muted-foreground">
-            MMSI {tooltip.vessel.mmsi}
+      {tooltip?.type === "vessel" && (() => {
+        const v = tooltip.vessel;
+        const typeName = getShipTypeName(v.shipType);
+        return (
+          <div
+            className="pointer-events-none absolute z-50 min-w-[200px] rounded-lg border border-border/40 bg-popover px-3 py-2.5 text-sm text-popover-foreground shadow-lg"
+            style={{ left: tooltip.x + 12, top: tooltip.y - 12 }}
+          >
+            <div className="font-semibold">{v.name}</div>
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              {typeName && <span className="text-cyan-400">{typeName}</span>}
+              {v.callSign && <span>{v.callSign}</span>}
+            </div>
+
+            <div className="mt-1.5 grid grid-cols-2 gap-x-4 gap-y-0.5 text-xs">
+              <span className="text-muted-foreground">Speed</span>
+              <span className="font-medium tabular-nums">{v.sog.toFixed(1)} kn</span>
+
+              <span className="text-muted-foreground">Course</span>
+              <span className="font-medium tabular-nums">{Math.round(v.cog)}&deg;</span>
+
+              {v.destination && (
+                <>
+                  <span className="text-muted-foreground">Destination</span>
+                  <span className="font-medium">{v.destination}</span>
+                </>
+              )}
+
+              {v.length && v.width ? (
+                <>
+                  <span className="text-muted-foreground">Size</span>
+                  <span className="font-medium tabular-nums">{v.length}m x {v.width}m</span>
+                </>
+              ) : null}
+
+              {v.draught ? (
+                <>
+                  <span className="text-muted-foreground">Draught</span>
+                  <span className="font-medium tabular-nums">{v.draught}m</span>
+                </>
+              ) : null}
+
+              {v.imo ? (
+                <>
+                  <span className="text-muted-foreground">IMO</span>
+                  <span className="font-medium tabular-nums">{v.imo}</span>
+                </>
+              ) : null}
+            </div>
+
+            <div className="mt-1.5 text-[10px] text-muted-foreground/60">
+              MMSI {v.mmsi}
+            </div>
           </div>
-          <div className="mt-1 flex gap-3 text-xs">
-            <span>
-              <span className="font-medium text-cyan-400">{tooltip.vessel.sog.toFixed(1)}</span> kn
-            </span>
-            <span>
-              <span className="font-medium text-cyan-400">{Math.round(tooltip.vessel.cog)}</span>&deg;
-            </span>
-          </div>
-        </div>
-      )}
+        );
+      })()}
     </div>
   );
 }

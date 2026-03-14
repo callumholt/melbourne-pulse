@@ -60,10 +60,21 @@ export async function GET() {
             data.Message?.StandardClassBPositionReport;
 
           if (data.MessageType === "ShipStaticData") {
+            const s = data.Message.ShipStaticData;
+            const dim = s.Dimension ?? {};
+            const lengthM = (dim.A ?? 0) + (dim.B ?? 0);
+            const widthM = (dim.C ?? 0) + (dim.D ?? 0);
             const event = {
               type: "static",
               mmsi: meta.MMSI,
-              name: meta.ShipName?.trim() || "",
+              name: (s.Name ?? meta.ShipName ?? "").trim(),
+              imo: s.ImoNumber || null,
+              callSign: (s.CallSign ?? "").trim() || null,
+              destination: (s.Destination ?? "").trim() || null,
+              shipType: s.Type ?? null,
+              length: lengthM || null,
+              width: widthM || null,
+              draught: s.MaximumStaticDraught || null,
             };
             controller.enqueue(
               encoder.encode(`data: ${JSON.stringify(event)}\n\n`),
