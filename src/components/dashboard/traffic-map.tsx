@@ -5,6 +5,7 @@ import dynamic from "next/dynamic";
 import { Card, CardContent } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { format, subDays } from "date-fns";
+import { useAisStream } from "@/lib/use-ais-stream";
 
 interface SensorData {
   sensor_id: number;
@@ -75,6 +76,11 @@ function interpolateSensors(
 }
 
 export function TrafficMap({ initialSensors, precinctNames, initialDate }: TrafficMapProps) {
+  // AIS ship tracking
+  const aisApiKey = typeof window !== "undefined"
+    ? process.env.NEXT_PUBLIC_AIS_API_KEY
+    : undefined;
+  const { vessels, connected: aisConnected, vesselCount } = useAisStream(aisApiKey);
   const [selectedDate, setSelectedDate] = useState(initialDate);
   const [dailySensors, setDailySensors] = useState(initialSensors);
   const [hourlyIndex, setHourlyIndex] = useState<HourlyIndex | null>(null);
@@ -206,7 +212,28 @@ export function TrafficMap({ initialSensors, precinctNames, initialDate }: Traff
       <Card className="border-border/40">
         <CardContent className="p-0">
           <div className={`relative h-[500px] w-full overflow-hidden rounded-lg ${loading ? "opacity-50 transition-opacity" : ""}`}>
-            <MapInner sensors={displaySensors} precinctNames={precinctNames} />
+            <MapInner sensors={displaySensors} precinctNames={precinctNames} vessels={vessels} />
+
+            {/* Vessel tracking indicator */}
+            {aisApiKey && (
+              <div className="absolute left-3 top-3 z-10 flex items-center gap-2 rounded-md bg-black/60 px-2.5 py-1.5 backdrop-blur-sm">
+                <span className="relative flex h-2 w-2">
+                  {aisConnected ? (
+                    <>
+                      <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-cyan-400 opacity-75" />
+                      <span className="relative inline-flex h-2 w-2 rounded-full bg-cyan-500" />
+                    </>
+                  ) : (
+                    <span className="relative inline-flex h-2 w-2 rounded-full bg-gray-500" />
+                  )}
+                </span>
+                <span className="text-xs text-white/70">
+                  {aisConnected
+                    ? `${vesselCount} vessel${vesselCount !== 1 ? "s" : ""} in Port Phillip Bay`
+                    : "Connecting to AIS..."}
+                </span>
+              </div>
+            )}
 
             {/* Playback controls overlay */}
             <div className="absolute bottom-0 left-0 right-0 z-10 bg-gradient-to-t from-black/80 to-transparent px-4 pb-4 pt-8">

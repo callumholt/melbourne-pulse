@@ -1,10 +1,11 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Map } from "maplibre-gl";
+import { Map as MapLibre } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { Deck } from "@deck.gl/core";
-import { ColumnLayer } from "@deck.gl/layers";
+import { ColumnLayer, ScatterplotLayer } from "@deck.gl/layers";
+import type { Vessel } from "@/lib/use-ais-stream";
 
 interface SensorData {
   sensor_id: number;
@@ -18,6 +19,7 @@ interface SensorData {
 interface MapInnerProps {
   sensors: SensorData[];
   precinctNames: Record<string, { name: string; colour: string }>;
+  vessels?: Map<number, Vessel>;
 }
 
 const MELBOURNE_CENTER = { longitude: 144.9631, latitude: -37.8136 };
@@ -56,21 +58,21 @@ function hexToRgb(hex: string): [number, number, number] {
     : [107, 114, 128];
 }
 
-export default function MapInner({ sensors, precinctNames }: MapInnerProps) {
+type TooltipData =
+  | { type: "sensor"; x: number; y: number; sensor: SensorData }
+  | { type: "vessel"; x: number; y: number; vessel: Vessel };
+
+export default function MapInner({ sensors, precinctNames, vessels }: MapInnerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const mapRef = useRef<Map | null>(null);
+  const mapRef = useRef<MapLibre | null>(null);
   const deckRef = useRef<Deck | null>(null);
-  const [tooltip, setTooltip] = useState<{
-    x: number;
-    y: number;
-    sensor: SensorData;
-  } | null>(null);
+  const [tooltip, setTooltip] = useState<TooltipData | null>(null);
 
   // Initialise map and deck
   useEffect(() => {
     if (!containerRef.current) return;
 
-    const map = new Map({
+    const map = new MapLibre({
       container: containerRef.current,
       style: DARK_STYLE,
       center: [INITIAL_VIEW.longitude, INITIAL_VIEW.latitude],
@@ -88,7 +90,6 @@ export default function MapInner({ sensors, precinctNames }: MapInnerProps) {
       getTooltip: () => null,
     });
 
-    // Sync deck to map movements
     map.on("move", () => {
       const center = map.getCenter();
       deck.setProps({
@@ -120,7 +121,7 @@ export default function MapInner({ sensors, precinctNames }: MapInnerProps) {
 
     const maxCount = Math.max(...sensors.map((s) => Number(s.total_count)), 1);
 
-    const layer = new ColumnLayer<SensorData>({
+    const sensorLayer = new ColumnLayer<SensorData>({
       id: "sensor-columns",
       data: sensors,
       diskResolution: 12,
@@ -144,9 +145,9 @@ export default function MapInner({ sensors, precinctNames }: MapInnerProps) {
       },
       onHover: (info) => {
         if (info.object) {
-          setTooltip({ x: info.x, y: info.y, sensor: info.object });
+          setTooltip({ type: "sensor", x: info.x, y: info.y, sensor: info.object });
         } else {
-          setTooltip(null);
+          setTooltip((prev) => prev?.type === "sensor" ? null : prev);
         }
       },
       updateTriggers: {
@@ -155,8 +156,54 @@ export default function MapInner({ sensors, precinctNames }: MapInnerProps) {
       },
     });
 
-    deckRef.current.setProps({ layers: [layer] });
-  }, [sensors, precinctNames]);
+    const layers = [sensorLayer];
+
+    // Vessel layer
+    if (vessels && vessels.size > 0) {
+      const vesselArray = Array.from(vessels.values());
+
+      const vesselLayer = new ScatterplotLayer<Vessel>({
+        id: "vessel-markers",
+        data: vesselArray,
+        pickable: true,
+        stroked: true,
+        filled: true,
+        radiusScale: 1,
+        radiusMinPixels: 4,
+        radiusMaxPixels: 12,
+        lineWidthMinPixels: 1,
+        getPosition: (d) => [d.lon, d.lat],
+        getRadius: (d) => {
+          // Larger for moving vessels
+          return d.sog > 1 ? 80 : 50;
+        },
+        getFillColor: (d) => {
+          // Colour by speed: stationary=amber, slow=cyan, fast=green
+          if (d.sog < 0.5) return [245, 158, 11, 200] as [number, number, number, number];
+          if (d.sog < 5) return [6, 182, 212, 220] as [number, number, number, number];
+          return [34, 197, 94, 230] as [number, number, number, number];
+        },
+        getLineColor: [255, 255, 255, 120],
+        getLineWidth: 1,
+        onHover: (info) => {
+          if (info.object) {
+            setTooltip({ type: "vessel", x: info.x, y: info.y, vessel: info.object });
+          } else {
+            setTooltip((prev) => prev?.type === "vessel" ? null : prev);
+          }
+        },
+        updateTriggers: {
+          getPosition: [vessels],
+          getFillColor: [vessels],
+          getRadius: [vessels],
+        },
+      });
+
+      layers.push(vesselLayer as unknown as typeof sensorLayer);
+    }
+
+    deckRef.current.setProps({ layers });
+  }, [sensors, precinctNames, vessels]);
 
   // Enable pointer events on deck canvas for hover
   useEffect(() => {
@@ -170,7 +217,7 @@ export default function MapInner({ sensors, precinctNames }: MapInnerProps) {
   return (
     <div className="relative h-full w-full">
       <div ref={containerRef} className="h-full w-full" />
-      {tooltip && (
+      {tooltip?.type === "sensor" && (
         <div
           className="pointer-events-none absolute z-50 rounded-lg border border-border/40 bg-popover px-3 py-2 text-sm text-popover-foreground shadow-lg"
           style={{ left: tooltip.x + 12, top: tooltip.y - 12 }}
@@ -184,6 +231,25 @@ export default function MapInner({ sensors, precinctNames }: MapInnerProps) {
           </div>
           <div className="mt-1 text-base font-bold tabular-nums">
             {Number(tooltip.sensor.total_count).toLocaleString()} pedestrians
+          </div>
+        </div>
+      )}
+      {tooltip?.type === "vessel" && (
+        <div
+          className="pointer-events-none absolute z-50 rounded-lg border border-border/40 bg-popover px-3 py-2 text-sm text-popover-foreground shadow-lg"
+          style={{ left: tooltip.x + 12, top: tooltip.y - 12 }}
+        >
+          <div className="font-semibold">{tooltip.vessel.name}</div>
+          <div className="text-xs text-muted-foreground">
+            MMSI {tooltip.vessel.mmsi}
+          </div>
+          <div className="mt-1 flex gap-3 text-xs">
+            <span>
+              <span className="font-medium text-cyan-400">{tooltip.vessel.sog.toFixed(1)}</span> kn
+            </span>
+            <span>
+              <span className="font-medium text-cyan-400">{Math.round(tooltip.vessel.cog)}</span>&deg;
+            </span>
           </div>
         </div>
       )}
