@@ -4,13 +4,15 @@ import { useEffect, useRef, useState, useImperativeHandle, forwardRef, useMemo }
 import { Map as MapLibre } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { Deck } from "@deck.gl/core";
-import { ColumnLayer, ScatterplotLayer, PathLayer } from "@deck.gl/layers";
+import { ColumnLayer, ScatterplotLayer, PathLayer, GeoJsonLayer } from "@deck.gl/layers";
 import { HeatmapLayer } from "@deck.gl/aggregation-layers";
 import { LightingEffect, AmbientLight, DirectionalLight } from "@deck.gl/core";
 import { getSunState } from "@/lib/sun-position";
 import type { Vessel } from "@/lib/use-ais-stream";
 import type { VesselTrail } from "@/lib/use-vessel-trails";
 import type { TreeMapPoint } from "@/lib/use-tree-layer";
+import type { ParkingBay } from "@/lib/use-parking-layer";
+import type { HospitalityVenue } from "@/lib/use-hospitality-layer";
 
 export interface SensorData {
   sensor_id: number;
@@ -33,10 +35,13 @@ interface MapInnerProps {
   vessels?: Map<number, Vessel>;
   vesselTrails?: VesselTrail[];
   trees?: TreeMapPoint[];
+  parkingBays?: ParkingBay[];
+  hospitalityVenues?: HospitalityVenue[];
+  buildingGeojson?: GeoJSON.FeatureCollection | null;
   layerMode?: LayerMode;
   currentHour?: number | null;
   theme?: "dark" | "light";
-  visibleLayers?: { sensors: boolean; vessels: boolean; trees: boolean };
+  visibleLayers?: { sensors: boolean; vessels: boolean; trees: boolean; parking: boolean; hospitality: boolean; buildings: boolean };
   precinctFilter?: string | null;
 }
 
@@ -105,12 +110,15 @@ function hexToRgb(hex: string): [number, number, number] {
 type TooltipData =
   | { type: "sensor"; x: number; y: number; sensor: SensorData }
   | { type: "vessel"; x: number; y: number; vessel: Vessel }
-  | { type: "tree"; x: number; y: number; tree: TreeMapPoint };
+  | { type: "tree"; x: number; y: number; tree: TreeMapPoint }
+  | { type: "parking"; x: number; y: number; bay: ParkingBay }
+  | { type: "hospitality"; x: number; y: number; venue: HospitalityVenue }
+  | { type: "building"; x: number; y: number; properties: Record<string, unknown> };
 
-const DEFAULT_VISIBLE = { sensors: true, vessels: true, trees: false };
+const DEFAULT_VISIBLE = { sensors: true, vessels: true, trees: false, parking: false, hospitality: false, buildings: false };
 
 const MapInner = forwardRef<MapInnerHandle, MapInnerProps>(function MapInner(
-  { sensors, precinctNames, vessels, vesselTrails, trees, layerMode = "columns", currentHour, theme = "dark", visibleLayers = DEFAULT_VISIBLE, precinctFilter },
+  { sensors, precinctNames, vessels, vesselTrails, trees, parkingBays, hospitalityVenues, buildingGeojson, layerMode = "columns", currentHour, theme = "dark", visibleLayers = DEFAULT_VISIBLE, precinctFilter },
   ref
 ) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -416,8 +424,121 @@ const MapInner = forwardRef<MapInnerHandle, MapInnerProps>(function MapInner(
       layers.push(vesselLayer);
     }
 
+    // Parking bay layer
+    if (visibleLayers.parking && parkingBays && parkingBays.length > 0) {
+      const parkingLayer = new ScatterplotLayer<ParkingBay>({
+        id: "parking-bays",
+        data: parkingBays,
+        pickable: true,
+        filled: true,
+        stroked: true,
+        radiusScale: 1,
+        radiusMinPixels: 2,
+        radiusMaxPixels: 6,
+        lineWidthMinPixels: 0.5,
+        getPosition: (d) => [d.lon, d.lat],
+        getRadius: 15,
+        getFillColor: (d) => {
+          return d.status === "Unoccupied"
+            ? [34, 197, 94, 200] as [number, number, number, number]   // green = available
+            : [239, 68, 68, 180] as [number, number, number, number];  // red = occupied
+        },
+        getLineColor: [255, 255, 255, 60],
+        getLineWidth: 0.5,
+        onHover: (info) => {
+          if (info.object) {
+            setTooltip({ type: "parking", x: info.x, y: info.y, bay: info.object });
+          } else {
+            setTooltip((prev) => prev?.type === "parking" ? null : prev);
+          }
+        },
+        updateTriggers: {
+          getFillColor: [parkingBays],
+        },
+      });
+      layers.push(parkingLayer);
+    }
+
+    // Hospitality venues layer
+    if (visibleLayers.hospitality && hospitalityVenues && hospitalityVenues.length > 0) {
+      const maxCapacity = Math.max(...hospitalityVenues.map((v) => v.capacity), 1);
+      const hospitalityLayer = new ScatterplotLayer<HospitalityVenue>({
+        id: "hospitality-venues",
+        data: hospitalityVenues,
+        pickable: true,
+        filled: true,
+        stroked: true,
+        radiusScale: 1,
+        radiusMinPixels: 3,
+        radiusMaxPixels: 14,
+        lineWidthMinPixels: 0.5,
+        getPosition: (d) => [d.lon, d.lat],
+        getRadius: (d) => {
+          const ratio = d.capacity / maxCapacity;
+          return 20 + ratio * 80;
+        },
+        getFillColor: (d) => {
+          return d.type === "cafe"
+            ? [251, 146, 60, 190] as [number, number, number, number]   // orange for cafes
+            : [168, 85, 247, 190] as [number, number, number, number];  // purple for bars
+        },
+        getLineColor: [255, 255, 255, 80],
+        getLineWidth: 0.5,
+        onHover: (info) => {
+          if (info.object) {
+            setTooltip({ type: "hospitality", x: info.x, y: info.y, venue: info.object });
+          } else {
+            setTooltip((prev) => prev?.type === "hospitality" ? null : prev);
+          }
+        },
+        updateTriggers: {
+          getFillColor: [hospitalityVenues],
+          getRadius: [hospitalityVenues],
+        },
+      });
+      layers.push(hospitalityLayer);
+    }
+
+    // Building footprints (3D extruded)
+    if (visibleLayers.buildings && buildingGeojson) {
+      const buildingLayer = new GeoJsonLayer({
+        id: "building-footprints",
+        data: buildingGeojson,
+        pickable: true,
+        filled: true,
+        extruded: true,
+        wireframe: true,
+        getElevation: (f: GeoJSON.Feature) => {
+          // Use building height if available, otherwise estimate from floors
+          const props = f.properties || {};
+          const height = props.height || props.bld_hgt || props.estimated_height;
+          if (height) return Number(height);
+          const floors = props.floors || props.storeys || props.bld_floors;
+          if (floors) return Number(floors) * 3.5;
+          return 15; // default 15m (~4 floors)
+        },
+        getFillColor: [160, 160, 180, 120],
+        getLineColor: [200, 200, 220, 80],
+        lineWidthMinPixels: 1,
+        material: {
+          ambient: 0.35,
+          diffuse: 0.6,
+          shininess: 32,
+        },
+        onHover: (info) => {
+          if (info.object) {
+            setTooltip({ type: "building", x: info.x, y: info.y, properties: info.object.properties || {} });
+          } else {
+            setTooltip((prev) => prev?.type === "building" ? null : prev);
+          }
+        },
+      });
+      // Insert buildings before other layers so they render behind
+      layers.unshift(buildingLayer);
+    }
+
     deckRef.current.setProps({ layers });
-  }, [sensors, precinctNames, vessels, vesselTrails, trees, layerMode, visibleLayers, precinctFilter]);
+  }, [sensors, precinctNames, vessels, vesselTrails, trees, parkingBays, hospitalityVenues, buildingGeojson, layerMode, visibleLayers, precinctFilter]);
 
   // Enable pointer events on deck canvas for hover
   useEffect(() => {
@@ -522,6 +643,62 @@ const MapInner = forwardRef<MapInnerHandle, MapInnerProps>(function MapInner(
                   {t.useful_life_value}yr lifespan
                 </span>
               )}
+            </div>
+          </div>
+        );
+      })()}
+      {tooltip?.type === "parking" && (() => {
+        const b = tooltip.bay;
+        const isAvailable = b.status === "Unoccupied";
+        return (
+          <div
+            className="pointer-events-none absolute z-50 rounded-lg border border-border/40 bg-popover px-3 py-2 text-sm text-popover-foreground shadow-lg"
+            style={{ left: tooltip.x + 12, top: tooltip.y - 12 }}
+          >
+            <div className="font-semibold">Bay {b.st_marker_id}</div>
+            <div className={`mt-0.5 text-xs font-medium ${isAvailable ? "text-green-400" : "text-red-400"}`}>
+              {isAvailable ? "Available" : "Occupied"}
+            </div>
+          </div>
+        );
+      })()}
+      {tooltip?.type === "hospitality" && (() => {
+        const v = tooltip.venue;
+        return (
+          <div
+            className="pointer-events-none absolute z-50 rounded-lg border border-border/40 bg-popover px-3 py-2 text-sm text-popover-foreground shadow-lg"
+            style={{ left: tooltip.x + 12, top: tooltip.y - 12 }}
+          >
+            <div className="font-semibold">{v.name}</div>
+            <div className="text-xs text-muted-foreground">{v.address}</div>
+            <div className="mt-1 flex items-center gap-2 text-xs">
+              <span className={v.type === "cafe" ? "text-orange-400" : "text-purple-400"}>
+                {v.industry}
+              </span>
+            </div>
+            {v.capacity > 0 && (
+              <div className="mt-0.5 text-xs font-medium">
+                {v.capacity} {v.type === "cafe" ? "seats" : "patrons"}
+              </div>
+            )}
+          </div>
+        );
+      })()}
+      {tooltip?.type === "building" && (() => {
+        const p = tooltip.properties;
+        const name = (p.bld_name || p.name || p.address || null) as string | null;
+        const height = (p.height || p.bld_hgt || p.estimated_height || null) as number | null;
+        const floors = (p.floors || p.storeys || p.bld_floors || null) as number | null;
+        return (
+          <div
+            className="pointer-events-none absolute z-50 rounded-lg border border-border/40 bg-popover px-3 py-2 text-sm text-popover-foreground shadow-lg"
+            style={{ left: tooltip.x + 12, top: tooltip.y - 12 }}
+          >
+            {name && <div className="font-semibold">{String(name)}</div>}
+            <div className="flex items-center gap-3 text-xs">
+              {height && <span>Height: {Number(height).toFixed(0)}m</span>}
+              {floors && <span>{String(floors)} floors</span>}
+              {!name && !height && !floors && <span className="text-muted-foreground">Building</span>}
             </div>
           </div>
         );

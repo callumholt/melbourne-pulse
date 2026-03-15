@@ -5,11 +5,14 @@ import dynamic from "next/dynamic";
 import { Card, CardContent } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { format, subDays } from "date-fns";
-import { Columns3, Flame, TreePine, Ship, Users, Filter, Maximize2, Minimize2 } from "lucide-react";
+import { Columns3, Flame, TreePine, Ship, Users, Filter, Maximize2, Minimize2, ParkingSquare, UtensilsCrossed, Building2 } from "lucide-react";
 import { useAisStream } from "@/lib/use-ais-stream";
 import { useVesselTrails } from "@/lib/use-vessel-trails";
 import { useDeviceType } from "@/lib/use-device-type";
 import { useTreeLayer } from "@/lib/use-tree-layer";
+import { useParkingLayer } from "@/lib/use-parking-layer";
+import { useHospitalityLayer } from "@/lib/use-hospitality-layer";
+import { useBuildingLayer } from "@/lib/use-building-layer";
 import { PRECINCTS } from "@/lib/constants";
 import type { MapInnerHandle, LayerMode } from "./traffic-map-inner";
 import type { Map2DHandle } from "./traffic-map-2d";
@@ -105,13 +108,22 @@ export const TrafficMap = forwardRef<TrafficMapHandle, TrafficMapProps>(function
   const [hourlyIndex, setHourlyIndex] = useState<HourlyIndex | null>(null);
   const [loading, setLoading] = useState(false);
   const [layerMode, setLayerMode] = useState<LayerMode>("columns");
-  const [visibleLayers, setVisibleLayers] = useState({ sensors: true, vessels: true, trees: false });
+  const [visibleLayers, setVisibleLayers] = useState({ sensors: true, vessels: true, trees: false, parking: false, hospitality: false, buildings: false });
   const [precinctFilter, setPrecinctFilter] = useState<string | null>(null);
   const [showFilters, setShowFilters] = useState(false);
   const [expanded, setExpanded] = useState(false);
 
   // Tree layer data (loaded on demand)
   const { trees } = useTreeLayer(visibleLayers.trees, precinctFilter ?? undefined);
+
+  // Parking layer (real-time occupancy, refreshes every 5 min)
+  const { bays: parkingBays } = useParkingLayer(visibleLayers.parking);
+
+  // Hospitality layer (cafes, restaurants, bars)
+  const { venues: hospitalityVenues } = useHospitalityLayer(visibleLayers.hospitality);
+
+  // Building footprints (3D extruded buildings)
+  const { geojson: buildingGeojson } = useBuildingLayer(visibleLayers.buildings);
 
   const toggleLayer = (layer: keyof typeof visibleLayers) => {
     setVisibleLayers((prev) => ({ ...prev, [layer]: !prev[layer] }));
@@ -330,6 +342,33 @@ export const TrafficMap = forwardRef<TrafficMapHandle, TrafficMapProps>(function
               <TreePine className="h-3 w-3" />
               Trees
             </button>
+            <button
+              onClick={() => toggleLayer("parking")}
+              className={`flex items-center gap-1 rounded-md px-2 py-1 text-xs transition-colors ${
+                visibleLayers.parking ? "bg-amber-500/20 text-amber-400" : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              <ParkingSquare className="h-3 w-3" />
+              Parking
+            </button>
+            <button
+              onClick={() => toggleLayer("hospitality")}
+              className={`flex items-center gap-1 rounded-md px-2 py-1 text-xs transition-colors ${
+                visibleLayers.hospitality ? "bg-orange-500/20 text-orange-400" : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              <UtensilsCrossed className="h-3 w-3" />
+              Cafes & Bars
+            </button>
+            <button
+              onClick={() => toggleLayer("buildings")}
+              className={`flex items-center gap-1 rounded-md px-2 py-1 text-xs transition-colors ${
+                visibleLayers.buildings ? "bg-purple-500/20 text-purple-400" : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              <Building2 className="h-3 w-3" />
+              Buildings
+            </button>
 
             <span className="mx-1 text-border">|</span>
 
@@ -366,6 +405,9 @@ export const TrafficMap = forwardRef<TrafficMapHandle, TrafficMapProps>(function
                 vessels={vessels}
                 vesselTrails={vesselTrails}
                 trees={trees}
+                parkingBays={parkingBays}
+                hospitalityVenues={hospitalityVenues}
+                buildingGeojson={buildingGeojson}
                 layerMode={layerMode}
                 currentHour={mode === "hourly" ? currentTime : null}
                 theme={theme}

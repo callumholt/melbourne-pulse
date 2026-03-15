@@ -137,4 +137,91 @@ export async function fetchAllTrees(maxRecords = 90000): Promise<ComTreeRecord[]
   );
 }
 
-export type { ComPedestrianRecord, ComSensorLocation, ComMicroclimateRecord, ComTreeRecord };
+// On-street parking bay sensors (real-time occupancy)
+interface ComParkingSensorRecord {
+  bay_id: number;
+  st_marker_id: string;
+  status: string; // "Occupied" | "Unoccupied"
+  lat: number;
+  lon: number;
+  location: { lat: number; lon: number } | null;
+}
+
+export async function fetchParkingSensors(): Promise<ComParkingSensorRecord[]> {
+  return fetchPaginated<ComParkingSensorRecord>(
+    "on-street-parking-bay-sensors",
+    {
+      select: "bay_id,st_marker_id,status,lat,lon,location",
+    },
+    5000
+  );
+}
+
+// Cafes and restaurants with seating capacity
+interface ComCafeRecord {
+  census_year: number;
+  trading_name: string;
+  street_address: string;
+  clue_small_area: string;
+  industry_description: string;
+  seating_type: string;
+  number_of_seats: number;
+  longitude: number;
+  latitude: number;
+}
+
+export async function fetchCafesAndRestaurants(): Promise<ComCafeRecord[]> {
+  return fetchPaginated<ComCafeRecord>(
+    "cafes-and-restaurants-with-seating-capacity",
+    {
+      select: "census_year,trading_name,street_address,clue_small_area,industry_description,seating_type,number_of_seats,longitude,latitude",
+      order_by: "census_year DESC",
+    },
+    5000
+  );
+}
+
+// Bars and pubs with patron capacity
+interface ComBarRecord {
+  census_year: number;
+  trading_name: string;
+  street_address: string;
+  clue_small_area: string;
+  industry_description: string;
+  number_of_patrons: number;
+  longitude: number;
+  latitude: number;
+}
+
+export async function fetchBarsAndPubs(): Promise<ComBarRecord[]> {
+  return fetchPaginated<ComBarRecord>(
+    "bars-and-pubs-with-patron-capacity",
+    {
+      select: "census_year,trading_name,street_address,clue_small_area,industry_description,number_of_patrons,longitude,latitude",
+      order_by: "census_year DESC",
+    },
+    3000
+  );
+}
+
+// Building footprints (2023) - uses GeoJSON export for polygons
+export async function fetchBuildingFootprints(bbox?: { minLat: number; minLon: number; maxLat: number; maxLon: number }): Promise<GeoJSON.FeatureCollection> {
+  const params = new URLSearchParams({ limit: "100" });
+
+  if (bbox) {
+    // Use within_distance or geo filter
+    params.set("where", `within_distance(geo_shape, geom'POINT(${(bbox.minLon + bbox.maxLon) / 2} ${(bbox.minLat + bbox.maxLat) / 2})', 2km)`);
+    params.set("limit", "5000");
+  }
+
+  const url = `${BASE_URL}/2023-building-footprints/exports/geojson?${params}`;
+  const res = await fetch(url, { next: { revalidate: 86400 } }); // cache 24h
+
+  if (!res.ok) {
+    throw new Error(`CoM API error: ${res.status} for building footprints`);
+  }
+
+  return res.json();
+}
+
+export type { ComPedestrianRecord, ComSensorLocation, ComMicroclimateRecord, ComTreeRecord, ComParkingSensorRecord, ComCafeRecord, ComBarRecord };
