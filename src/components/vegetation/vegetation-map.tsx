@@ -10,12 +10,14 @@ import { VegetationLayerControls } from "./vegetation-layer-controls";
 import { VegetationInfoPanel } from "./vegetation-info-panel";
 import { AddressSearch } from "./address-search";
 import { SummaryStats, type LayerStats } from "./summary-stats";
-import { LAYER_DEFS, LAND_COVER_CLASSES, type LayerVisibility, type FeatureInfo, type LayerDef } from "./vegetation-types";
+import { LAYER_DEFS, type LayerVisibility, type FeatureInfo, type LayerDef } from "./vegetation-types";
 
 const VIC_WFS_BASE = "https://opendata.maps.vic.gov.au/geoserver/wfs";
 
 const BLOB_BASE = process.env.NEXT_PUBLIC_BLOB_URL ?? "";
 const USE_PMTILES = process.env.NEXT_PUBLIC_USE_PMTILES === "true";
+
+const DEA_WMS_URL = "https://ows.dea.ga.gov.au/?service=WMS&version=1.3.0&request=GetMap&layers=ga_ls_landcover&styles=level3&crs=EPSG:3857&bbox={bbox-epsg-3857}&width=256&height=256&format=image/png";
 
 const DEFAULT_LAYERS: LayerVisibility = {
   evc: true,
@@ -25,6 +27,7 @@ const DEFAULT_LAYERS: LayerVisibility = {
   treeDensity: false,
   fireHistory: false,
   landCover: false,
+  deaLandCover: false,
 };
 
 const VICTORIA_CENTER = { longitude: 145.5, latitude: -37.0 };
@@ -119,6 +122,23 @@ function addLandCoverToMap(map: MapLibre) {
   if (!map.getLayer("land-cover-raster")) {
     map.addLayer(
       { id: "land-cover-raster", type: "raster", source: sourceId, paint: { "raster-opacity": 0.6 } },
+    );
+  }
+}
+
+function addDeaLandCoverToMap(map: MapLibre) {
+  const sourceId = "dea-land-cover-source";
+  if (!map.getSource(sourceId)) {
+    map.addSource(sourceId, {
+      type: "raster",
+      tiles: [DEA_WMS_URL],
+      tileSize: 256,
+      attribution: '&copy; <a href="https://www.ga.gov.au/scientific-topics/dea">Geoscience Australia DEA</a>',
+    });
+  }
+  if (!map.getLayer("dea-land-cover-raster")) {
+    map.addLayer(
+      { id: "dea-land-cover-raster", type: "raster", source: sourceId, paint: { "raster-opacity": 0.6 } },
       "carto-layer",
     );
   }
@@ -276,13 +296,19 @@ export function VegetationMap() {
     });
 
     map.on("load", () => {
-      // Add land cover raster (below other layers)
+      // Add raster layers (below vector layers)
       if (BLOB_BASE) {
         addLandCoverToMap(map);
         const lcVis = layersRef.current.landCover ? "visible" : "none";
         if (map.getLayer("land-cover-raster")) {
           map.setLayoutProperty("land-cover-raster", "visibility", lcVis);
         }
+      }
+
+      addDeaLandCoverToMap(map);
+      const deaVis = layersRef.current.deaLandCover ? "visible" : "none";
+      if (map.getLayer("dea-land-cover-raster")) {
+        map.setLayoutProperty("dea-land-cover-raster", "visibility", deaVis);
       }
 
       for (const def of LAYER_DEFS) {
@@ -353,6 +379,11 @@ export function VegetationMap() {
           map.setLayoutProperty("land-cover-raster", "visibility", lcVis);
         }
       }
+      addDeaLandCoverToMap(map);
+      const deaVis = layersRef.current.deaLandCover ? "visible" : "none";
+      if (map.getLayer("dea-land-cover-raster")) {
+        map.setLayoutProperty("dea-land-cover-raster", "visibility", deaVis);
+      }
       for (const def of LAYER_DEFS) {
         addLayerToMap(map, def);
         const vis = layersRef.current[def.key] ? "visible" : "none";
@@ -372,9 +403,12 @@ export function VegetationMap() {
 
     if (!map || !map.isStyleLoaded()) return;
 
-    // Handle land cover raster separately
+    // Handle raster layers separately
     if (map.getLayer("land-cover-raster")) {
       map.setLayoutProperty("land-cover-raster", "visibility", newLayers.landCover ? "visible" : "none");
+    }
+    if (map.getLayer("dea-land-cover-raster")) {
+      map.setLayoutProperty("dea-land-cover-raster", "visibility", newLayers.deaLandCover ? "visible" : "none");
     }
 
     for (const def of LAYER_DEFS) {

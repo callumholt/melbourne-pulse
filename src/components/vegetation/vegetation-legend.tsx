@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { ChevronDown } from "lucide-react";
-import { LAND_COVER_CLASSES, type LayerVisibility } from "./vegetation-types";
+import { LAND_COVER_CLASSES, DEA_LAND_COVER_CLASSES, type LayerVisibility } from "./vegetation-types";
 
 interface LegendSection {
   layerKey: keyof LayerVisibility;
@@ -91,8 +91,9 @@ export function VegetationLegend({ layers }: VegetationLegendProps) {
   const [expanded, setExpanded] = useState(true);
   const activeSections = LEGEND_SECTIONS.filter((s) => layers[s.layerKey]);
   const showLandCover = layers.landCover;
+  const showDeaLandCover = layers.deaLandCover;
 
-  if (activeSections.length === 0 && !showLandCover) return null;
+  if (activeSections.length === 0 && !showLandCover && !showDeaLandCover) return null;
 
   return (
     <div className="absolute bottom-6 left-4 max-h-[calc(100dvh-8rem)] overflow-y-auto rounded-lg border border-border/40 bg-background/80 backdrop-blur-sm">
@@ -163,6 +164,25 @@ export function VegetationLegend({ layers }: VegetationLegendProps) {
                 </div>
               </div>
             ))}
+          </div>
+        )}
+
+        {showDeaLandCover && (
+          <div>
+            <div className="mb-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+              DEA Land Cover (2024)
+            </div>
+            <div className="space-y-0.5">
+              {DEA_LAND_COVER_CLASSES.map((cls) => (
+                <div key={cls.code} className="flex items-center gap-2">
+                  <div
+                    className="h-3 w-5 rounded-sm"
+                    style={{ backgroundColor: cls.colour, opacity: 0.7 }}
+                  />
+                  <span className="text-[10px] text-muted-foreground">{cls.label}</span>
+                </div>
+              ))}
+            </div>
           </div>
         )}
       </div>

@@ -5,7 +5,8 @@ export type LayerKey =
   | "vicforests"
   | "treeDensity"
   | "fireHistory"
-  | "landCover";
+  | "landCover"
+  | "deaLandCover";
 
 export type LayerVisibility = Record<LayerKey, boolean>;
 
@@ -200,4 +201,14 @@ export const LAND_COVER_CLASSES = [
   { id: 17, label: "Ocean / Estuarine", colour: "#1e3a5f", category: "Water" },
   { id: 18, label: "Bare / Minimal Vegetation", colour: "#d4d4d4", category: "Other" },
   { id: 19, label: "Unclassified", colour: "#a1a1aa", category: "Other" },
+];
+
+// DEA Land Cover Level 3 classes (Geoscience Australia, 30m, 1988-2024)
+export const DEA_LAND_COVER_CLASSES = [
+  { code: 111, label: "Cultivated Vegetation", colour: "#f59e0b" },
+  { code: 112, label: "Natural Vegetation", colour: "#16a34a" },
+  { code: 124, label: "Natural Aquatic Vegetation", colour: "#0d9488" },
+  { code: 215, label: "Artificial Surface", colour: "#6b7280" },
+  { code: 216, label: "Natural Bare Surface", colour: "#a8a29e" },
+  { code: 220, label: "Water", colour: "#3b82f6" },
 ];

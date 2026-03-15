@@ -25,7 +25,7 @@ const LAYER_GROUPS: { title: string; items: LayerKey[] }[] = [
   },
   {
     title: "Land Cover",
-    items: ["landCover"],
+    items: ["landCover", "deaLandCover"],
   },
 ];
 
@@ -68,17 +68,20 @@ export function VegetationLayerControls({ layers, onToggle, mobileOpen, onMobile
               </div>
               <div className="space-y-1">
                 {group.items.map((key) => {
-                  // Land cover is a raster, not in LAYER_DEFS
-                  if (key === "landCover") {
+                  // Raster layers not in LAYER_DEFS
+                  if (key === "landCover" || key === "deaLandCover") {
+                    const label = key === "landCover"
+                      ? "Victorian Land Cover (2021-22)"
+                      : "DEA Land Cover (2024)";
                     return (
                       <label key={key} className="flex items-center gap-2 text-sm">
                         <input
                           type="checkbox"
-                          checked={layers.landCover}
-                          onChange={(e) => onToggle({ ...layers, landCover: e.target.checked })}
+                          checked={layers[key]}
+                          onChange={(e) => onToggle({ ...layers, [key]: e.target.checked })}
                           className="h-3.5 w-3.5 rounded border-border accent-primary"
                         />
-                        <span className="text-muted-foreground">Victorian Land Cover (2021-22)</span>
+                        <span className="text-muted-foreground">{label}</span>
                       </label>
                     );
                   }

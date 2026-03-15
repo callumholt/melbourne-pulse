@@ -79,6 +79,10 @@ const PANEL_CONFIG: Record<LayerKey, { title: string; fields: FieldDef[] }> = {
     title: "Land Cover",
     fields: [],
   },
+  deaLandCover: {
+    title: "DEA Land Cover",
+    fields: [],
+  },
 };
 
 const STATUS_COLOURS: Record<string, string> = {
