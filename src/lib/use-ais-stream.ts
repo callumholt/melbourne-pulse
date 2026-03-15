@@ -29,11 +29,13 @@ export function useAisStream(enabled: boolean) {
   const [vesselCount, setVesselCount] = useState(0);
   const vesselsRef = useRef<Map<number, Vessel>>(new Map());
   const retryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const retryDelayRef = useRef(5000);
 
   useEffect(() => {
     if (!enabled) return;
 
     let abortController: AbortController | null = null;
+    retryDelayRef.current = 5000;
 
     const connect = async () => {
       abortController = new AbortController();
@@ -45,6 +47,7 @@ export function useAisStream(enabled: boolean) {
         }
 
         setConnected(true);
+        retryDelayRef.current = 5000; // reset backoff on success
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let buffer = "";
@@ -127,8 +130,9 @@ export function useAisStream(enabled: boolean) {
 
       setConnected(false);
 
-      // Auto-reconnect after 5s
-      retryRef.current = setTimeout(connect, 5000);
+      // Auto-reconnect with exponential backoff (5s, 10s, 20s, ... max 60s)
+      retryRef.current = setTimeout(connect, retryDelayRef.current);
+      retryDelayRef.current = Math.min(retryDelayRef.current * 2, 60_000);
     };
 
     connect();

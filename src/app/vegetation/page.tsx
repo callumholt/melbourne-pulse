@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { Navbar } from "@/components/navbar";
-import { VegetationMap } from "@/components/vegetation/vegetation-map";
+import { VegetationMapLoader } from "@/components/vegetation/vegetation-map-loader";
 
 export const metadata: Metadata = {
   title: "Vegetation Cover - Melbourne Pulse",
@@ -13,7 +13,7 @@ export default function VegetationPage() {
     <>
       <Navbar />
       <main className="relative h-[calc(100dvh-3.5rem)]">
-        <VegetationMap />
+        <VegetationMapLoader />
       </main>
     </>
   );

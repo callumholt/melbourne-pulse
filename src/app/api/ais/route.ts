@@ -12,10 +12,6 @@ const PORT_PHILLIP_BBOX = [
 
 const AIS_WS_URL = "wss://stream.aisstream.io/v0/stream";
 
-// Rate limiting: track concurrent SSE connections per IP
-const connectionCounts = new Map<string, number>();
-const MAX_CONNECTIONS_PER_IP = 3;
-
 // Batch buffer for vessel position inserts
 interface PositionRecord {
   mmsi: string;
@@ -78,16 +74,6 @@ export async function GET(req: Request) {
     return new Response("AIS_API_KEY not configured", { status: 503 });
   }
 
-  // Rate limit by IP
-  const forwarded = req.headers.get("x-forwarded-for");
-  const ip = forwarded?.split(",")[0]?.trim() ?? "unknown";
-  const currentCount = connectionCounts.get(ip) ?? 0;
-
-  if (currentCount >= MAX_CONNECTIONS_PER_IP) {
-    return new Response("Too many concurrent AIS connections", { status: 429 });
-  }
-
-  connectionCounts.set(ip, currentCount + 1);
   ensureFlushTimer();
 
   const encoder = new TextEncoder();
@@ -211,14 +197,6 @@ export async function GET(req: Request) {
       });
     },
     cancel() {
-      // Decrement connection count
-      const count = connectionCounts.get(ip) ?? 1;
-      if (count <= 1) {
-        connectionCounts.delete(ip);
-      } else {
-        connectionCounts.set(ip, count - 1);
-      }
-
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.close();
       }

@@ -88,7 +88,7 @@ export function AddressSearch({ onSelect }: AddressSearchProps) {
   };
 
   return (
-    <div ref={containerRef} className="absolute left-4 top-4 z-10 w-80">
+    <div ref={containerRef} className="absolute left-4 right-16 top-4 z-10 md:right-auto md:w-80">
       <div className="relative">
         <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
         <input
