@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, ChevronRight } from "lucide-react";
 import { LAND_COVER_CLASSES, DEA_LAND_COVER_CLASSES, type LayerVisibility } from "./vegetation-types";
 
 interface LegendSection {
@@ -89,6 +89,7 @@ interface VegetationLegendProps {
 
 export function VegetationLegend({ layers }: VegetationLegendProps) {
   const [expanded, setExpanded] = useState(true);
+  const [landCoverExpanded, setLandCoverExpanded] = useState(false);
   const activeSections = LEGEND_SECTIONS.filter((s) => layers[s.layerKey]);
   const showLandCover = layers.landCover;
   const showDeaLandCover = layers.deaLandCover;
@@ -145,10 +146,18 @@ export function VegetationLegend({ layers }: VegetationLegendProps) {
 
         {showLandCover && (
           <div>
-            <div className="mb-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+            <button
+              onClick={() => setLandCoverExpanded(!landCoverExpanded)}
+              className="mb-1 flex w-full items-center gap-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground"
+            >
+              {landCoverExpanded ? (
+                <ChevronDown className="h-3 w-3" />
+              ) : (
+                <ChevronRight className="h-3 w-3" />
+              )}
               Land Cover (2021-22)
-            </div>
-            {Object.entries(LAND_COVER_GROUPS).map(([category, items]) => (
+            </button>
+            {landCoverExpanded && Object.entries(LAND_COVER_GROUPS).map(([category, items]) => (
               <div key={category} className="mb-1.5">
                 <div className="text-[10px] text-muted-foreground/60">{category}</div>
                 <div className="space-y-0.5">

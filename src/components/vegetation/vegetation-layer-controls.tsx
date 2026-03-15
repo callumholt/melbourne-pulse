@@ -42,7 +42,7 @@ export function VegetationLayerControls({ layers, onToggle, mobileOpen, onMobile
 
       <div
         className={`
-          absolute right-4 top-4 z-40 w-64 rounded-lg border border-border/40 bg-background/80 p-3 backdrop-blur-sm
+          absolute right-4 top-4 z-40 w-72 rounded-lg border border-border/40 bg-background/80 p-3 backdrop-blur-sm
           transition-transform duration-200
           ${mobileOpen ? "translate-x-0" : "translate-x-[calc(100%+2rem)]"}
           md:translate-x-0

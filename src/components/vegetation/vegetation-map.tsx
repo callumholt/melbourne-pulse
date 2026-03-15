@@ -138,8 +138,7 @@ function addDeaLandCoverToMap(map: MapLibre) {
   }
   if (!map.getLayer("dea-land-cover-raster")) {
     map.addLayer(
-      { id: "dea-land-cover-raster", type: "raster", source: sourceId, paint: { "raster-opacity": 0.6 } },
-      "carto-layer",
+      { id: "dea-land-cover-raster", type: "raster", source: sourceId, paint: { "raster-opacity": 0.7 } },
     );
   }
 }
@@ -213,9 +212,10 @@ export function VegetationMap() {
   layersRef.current = layers;
 
   // Register PMTiles protocol once (dynamic import to avoid SSR issues)
+  const pmtilesReady = useRef<Promise<void> | null>(null);
   useEffect(() => {
     let protocol: ProtocolType | null = null;
-    import("pmtiles").then(({ Protocol }) => {
+    pmtilesReady.current = import("pmtiles").then(({ Protocol }) => {
       protocol = new Protocol();
       addProtocol("pmtiles", protocol.tile);
     });
@@ -295,7 +295,10 @@ export function VegetationMap() {
       bearing: INITIAL_VIEW.bearing,
     });
 
-    map.on("load", () => {
+    map.on("load", async () => {
+      // Ensure PMTiles protocol is registered before adding sources
+      if (pmtilesReady.current) await pmtilesReady.current;
+
       // Add raster layers (below vector layers)
       if (BLOB_BASE) {
         addLandCoverToMap(map);
@@ -366,12 +369,18 @@ export function VegetationMap() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Update style when theme changes
+  // Update style when theme changes (skip initial render)
+  const themeInitRef = useRef(true);
   useEffect(() => {
+    if (themeInitRef.current) {
+      themeInitRef.current = false;
+      return;
+    }
     const map = mapRef.current;
     if (!map) return;
     map.setStyle(makeStyle(theme));
-    map.once("styledata", () => {
+    map.once("styledata", async () => {
+      if (pmtilesReady.current) await pmtilesReady.current;
       if (BLOB_BASE) {
         addLandCoverToMap(map);
         const lcVis = layersRef.current.landCover ? "visible" : "none";
