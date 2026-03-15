@@ -83,6 +83,10 @@ const PANEL_CONFIG: Record<LayerKey, { title: string; fields: FieldDef[] }> = {
     title: "DEA Land Cover",
     fields: [],
   },
+  sentinel2: {
+    title: "Sentinel-2 Satellite",
+    fields: [],
+  },
 };
 
 const STATUS_COLOURS: Record<string, string> = {

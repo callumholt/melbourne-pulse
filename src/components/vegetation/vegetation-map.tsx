@@ -10,7 +10,7 @@ import { VegetationLayerControls } from "./vegetation-layer-controls";
 import { VegetationInfoPanel } from "./vegetation-info-panel";
 import { AddressSearch } from "./address-search";
 import { SummaryStats, type LayerStats } from "./summary-stats";
-import { LAYER_DEFS, type LayerVisibility, type FeatureInfo, type LayerDef } from "./vegetation-types";
+import { LAYER_DEFS, type LayerVisibility, type FeatureInfo, type LayerDef, type Basemap } from "./vegetation-types";
 
 const VIC_WFS_BASE = "https://opendata.maps.vic.gov.au/geoserver/wfs";
 
@@ -18,6 +18,10 @@ const BLOB_BASE = process.env.NEXT_PUBLIC_BLOB_URL ?? "";
 const USE_PMTILES = process.env.NEXT_PUBLIC_USE_PMTILES === "true";
 
 const DEA_WMS_URL = "https://ows.dea.ga.gov.au/?service=WMS&version=1.3.0&request=GetMap&layers=ga_ls_landcover&styles=level3&crs=EPSG:3857&bbox={bbox-epsg-3857}&width=256&height=256&format=image/png";
+
+const DEA_SENTINEL2_WMS_URL = "https://ows.dea.ga.gov.au/?service=WMS&version=1.3.0&request=GetMap&layers=ga_s2_gm&styles=simple_rgb&crs=EPSG:3857&bbox={bbox-epsg-3857}&width=256&height=256&format=image/png";
+
+const ESRI_SATELLITE_TILES = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
 
 const DEFAULT_LAYERS: LayerVisibility = {
   evc: true,
@@ -28,25 +32,33 @@ const DEFAULT_LAYERS: LayerVisibility = {
   fireHistory: false,
   landCover: false,
   deaLandCover: false,
+  sentinel2: false,
 };
 
 const VICTORIA_CENTER = { longitude: 145.5, latitude: -37.0 };
 const INITIAL_VIEW = { ...VICTORIA_CENTER, zoom: 7, pitch: 0, bearing: 0 };
 
-function makeStyle(theme: "dark" | "light") {
-  const tileVariant = theme === "dark" ? "dark_all" : "light_all";
+function makeStyle(theme: "dark" | "light", basemap: Basemap = "streets") {
+  const sourceId = basemap === "satellite" ? "basemap-tiles" : "basemap-tiles";
+  const tiles = basemap === "satellite"
+    ? [ESRI_SATELLITE_TILES]
+    : [`https://a.basemaps.cartocdn.com/${theme === "dark" ? "dark_all" : "light_all"}/{z}/{x}/{y}@2x.png`];
+  const attribution = basemap === "satellite"
+    ? '&copy; <a href="https://www.esri.com/">Esri</a>, Maxar, Earthstar Geographics'
+    : '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/">CARTO</a>';
+
   return {
     version: 8 as const,
     sources: {
-      "carto-tiles": {
+      [sourceId]: {
         type: "raster" as const,
-        tiles: [`https://a.basemaps.cartocdn.com/${tileVariant}/{z}/{x}/{y}@2x.png`],
+        tiles,
         tileSize: 256,
-        attribution:
-          '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/">CARTO</a>',
+        attribution,
+        maxzoom: basemap === "satellite" ? 19 : 20,
       },
     },
-    layers: [{ id: "carto-layer", type: "raster" as const, source: "carto-tiles", minzoom: 0, maxzoom: 20 }],
+    layers: [{ id: "basemap-layer", type: "raster" as const, source: sourceId, minzoom: 0, maxzoom: 20 }],
   };
 }
 
@@ -143,6 +155,23 @@ function addDeaLandCoverToMap(map: MapLibre) {
   }
 }
 
+function addSentinel2ToMap(map: MapLibre) {
+  const sourceId = "sentinel2-source";
+  if (!map.getSource(sourceId)) {
+    map.addSource(sourceId, {
+      type: "raster",
+      tiles: [DEA_SENTINEL2_WMS_URL],
+      tileSize: 256,
+      attribution: '&copy; <a href="https://www.ga.gov.au/scientific-topics/dea">Geoscience Australia DEA</a> (Sentinel-2)',
+    });
+  }
+  if (!map.getLayer("sentinel2-raster")) {
+    map.addLayer(
+      { id: "sentinel2-raster", type: "raster", source: sourceId, paint: { "raster-opacity": 0.85 } },
+    );
+  }
+}
+
 function addLayerToMap(map: MapLibre, def: LayerDef) {
   if (USE_PMTILES && def.pmtilesLayer && BLOB_BASE) {
     addPmtilesLayerToMap(map, def);
@@ -206,6 +235,7 @@ export function VegetationMap() {
   const [layers, setLayers] = useState<LayerVisibility>(DEFAULT_LAYERS);
   const [loading, setLoading] = useState(false);
   const [theme, setTheme] = useState<"dark" | "light">("dark");
+  const [basemap, setBasemap] = useState<Basemap>("streets");
   const [mobileControlsOpen, setMobileControlsOpen] = useState(false);
   const [stats, setStats] = useState<LayerStats[]>([]);
   const layersRef = useRef(layers);
@@ -314,6 +344,12 @@ export function VegetationMap() {
         map.setLayoutProperty("dea-land-cover-raster", "visibility", deaVis);
       }
 
+      addSentinel2ToMap(map);
+      const s2Vis = layersRef.current.sentinel2 ? "visible" : "none";
+      if (map.getLayer("sentinel2-raster")) {
+        map.setLayoutProperty("sentinel2-raster", "visibility", s2Vis);
+      }
+
       for (const def of LAYER_DEFS) {
         addLayerToMap(map, def);
         const vis = layersRef.current[def.key] ? "visible" : "none";
@@ -378,7 +414,7 @@ export function VegetationMap() {
     }
     const map = mapRef.current;
     if (!map) return;
-    map.setStyle(makeStyle(theme));
+    map.setStyle(makeStyle(theme, basemap));
     map.once("styledata", async () => {
       if (pmtilesReady.current) await pmtilesReady.current;
       if (BLOB_BASE) {
@@ -393,6 +429,11 @@ export function VegetationMap() {
       if (map.getLayer("dea-land-cover-raster")) {
         map.setLayoutProperty("dea-land-cover-raster", "visibility", deaVis);
       }
+      addSentinel2ToMap(map);
+      const s2Vis = layersRef.current.sentinel2 ? "visible" : "none";
+      if (map.getLayer("sentinel2-raster")) {
+        map.setLayoutProperty("sentinel2-raster", "visibility", s2Vis);
+      }
       for (const def of LAYER_DEFS) {
         addLayerToMap(map, def);
         const vis = layersRef.current[def.key] ? "visible" : "none";
@@ -403,7 +444,7 @@ export function VegetationMap() {
       }
       loadAllVisibleLayers(map);
     });
-  }, [theme, loadAllVisibleLayers]);
+  }, [theme, basemap, loadAllVisibleLayers]);
 
   // Toggle layer visibility and reload data when layer is enabled
   const handleLayerToggle = useCallback((newLayers: LayerVisibility) => {
@@ -418,6 +459,9 @@ export function VegetationMap() {
     }
     if (map.getLayer("dea-land-cover-raster")) {
       map.setLayoutProperty("dea-land-cover-raster", "visibility", newLayers.deaLandCover ? "visible" : "none");
+    }
+    if (map.getLayer("sentinel2-raster")) {
+      map.setLayoutProperty("sentinel2-raster", "visibility", newLayers.sentinel2 ? "visible" : "none");
     }
 
     for (const def of LAYER_DEFS) {
@@ -435,6 +479,10 @@ export function VegetationMap() {
     // Update stats after toggle
     setTimeout(() => updateStats(map), 200);
   }, [layers, loadLayerData, updateStats]);
+
+  const handleBasemapChange = useCallback((newBasemap: Basemap) => {
+    setBasemap(newBasemap);
+  }, []);
 
   const minZoom = getMinActiveZoom(layers);
 
@@ -470,6 +518,8 @@ export function VegetationMap() {
       <VegetationLayerControls
         layers={layers}
         onToggle={handleLayerToggle}
+        basemap={basemap}
+        onBasemapChange={handleBasemapChange}
         mobileOpen={mobileControlsOpen}
         onMobileClose={() => setMobileControlsOpen(false)}
       />

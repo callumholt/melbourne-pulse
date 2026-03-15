@@ -6,7 +6,10 @@ export type LayerKey =
   | "treeDensity"
   | "fireHistory"
   | "landCover"
-  | "deaLandCover";
+  | "deaLandCover"
+  | "sentinel2";
+
+export type Basemap = "streets" | "satellite";
 
 export type LayerVisibility = Record<LayerKey, boolean>;
 

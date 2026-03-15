@@ -1,11 +1,13 @@
 "use client";
 
 import { Layers, X } from "lucide-react";
-import { LAYER_DEFS, type LayerVisibility, type LayerKey } from "./vegetation-types";
+import { LAYER_DEFS, type LayerVisibility, type LayerKey, type Basemap } from "./vegetation-types";
 
 interface VegetationLayerControlsProps {
   layers: LayerVisibility;
   onToggle: (layers: LayerVisibility) => void;
+  basemap: Basemap;
+  onBasemapChange: (basemap: Basemap) => void;
   mobileOpen: boolean;
   onMobileClose: () => void;
 }
@@ -27,9 +29,19 @@ const LAYER_GROUPS: { title: string; items: LayerKey[] }[] = [
     title: "Land Cover",
     items: ["landCover", "deaLandCover"],
   },
+  {
+    title: "Satellite & Aerial",
+    items: ["sentinel2"],
+  },
 ];
 
-export function VegetationLayerControls({ layers, onToggle, mobileOpen, onMobileClose }: VegetationLayerControlsProps) {
+const RASTER_LABELS: Partial<Record<LayerKey, string>> = {
+  landCover: "Victorian Land Cover (2021-22)",
+  deaLandCover: "DEA Land Cover (2024)",
+  sentinel2: "Sentinel-2 Satellite (DEA)",
+};
+
+export function VegetationLayerControls({ layers, onToggle, basemap, onBasemapChange, mobileOpen, onMobileClose }: VegetationLayerControlsProps) {
   return (
     <>
       {/* Mobile overlay backdrop */}
@@ -61,6 +73,35 @@ export function VegetationLayerControls({ layers, onToggle, mobileOpen, onMobile
           </button>
         </div>
         <div className="space-y-3">
+          {/* Basemap switcher */}
+          <div>
+            <div className="mb-1 text-[11px] uppercase tracking-wider text-muted-foreground/60">
+              Basemap
+            </div>
+            <div className="flex gap-1">
+              <button
+                onClick={() => onBasemapChange("streets")}
+                className={`flex-1 rounded-md px-2 py-1 text-xs transition-colors ${
+                  basemap === "streets"
+                    ? "bg-primary text-primary-foreground"
+                    : "bg-muted/50 text-muted-foreground hover:bg-muted"
+                }`}
+              >
+                Streets
+              </button>
+              <button
+                onClick={() => onBasemapChange("satellite")}
+                className={`flex-1 rounded-md px-2 py-1 text-xs transition-colors ${
+                  basemap === "satellite"
+                    ? "bg-primary text-primary-foreground"
+                    : "bg-muted/50 text-muted-foreground hover:bg-muted"
+                }`}
+              >
+                Aerial
+              </button>
+            </div>
+          </div>
+
           {LAYER_GROUPS.map((group) => (
             <div key={group.title}>
               <div className="mb-1 text-[11px] uppercase tracking-wider text-muted-foreground/60">
@@ -69,10 +110,7 @@ export function VegetationLayerControls({ layers, onToggle, mobileOpen, onMobile
               <div className="space-y-1">
                 {group.items.map((key) => {
                   // Raster layers not in LAYER_DEFS
-                  if (key === "landCover" || key === "deaLandCover") {
-                    const label = key === "landCover"
-                      ? "Victorian Land Cover (2021-22)"
-                      : "DEA Land Cover (2024)";
+                  if (key in RASTER_LABELS) {
                     return (
                       <label key={key} className="flex items-center gap-2 text-sm">
                         <input
@@ -81,7 +119,7 @@ export function VegetationLayerControls({ layers, onToggle, mobileOpen, onMobile
                           onChange={(e) => onToggle({ ...layers, [key]: e.target.checked })}
                           className="h-3.5 w-3.5 rounded border-border accent-primary"
                         />
-                        <span className="text-muted-foreground">{label}</span>
+                        <span className="text-muted-foreground">{RASTER_LABELS[key]}</span>
                       </label>
                     );
                   }
