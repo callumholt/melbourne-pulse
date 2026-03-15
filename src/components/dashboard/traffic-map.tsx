@@ -5,7 +5,7 @@ import dynamic from "next/dynamic";
 import { Card, CardContent } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { format, subDays } from "date-fns";
-import { Columns3, Flame, TreePine, Ship, Users, Filter, Maximize2, Minimize2, ParkingSquare, UtensilsCrossed, Building2 } from "lucide-react";
+import { Columns3, Flame, TreePine, Ship, Users, Filter, Maximize2, Minimize2, ParkingSquare, UtensilsCrossed, Building2, Route } from "lucide-react";
 import { useAisStream } from "@/lib/use-ais-stream";
 import { useVesselTrails } from "@/lib/use-vessel-trails";
 import { useDeviceType } from "@/lib/use-device-type";
@@ -13,6 +13,7 @@ import { useTreeLayer } from "@/lib/use-tree-layer";
 import { useParkingLayer } from "@/lib/use-parking-layer";
 import { useHospitalityLayer } from "@/lib/use-hospitality-layer";
 import { useBuildingLayer } from "@/lib/use-building-layer";
+import { useFlowLayer } from "@/lib/use-flow-layer";
 import { PRECINCTS } from "@/lib/constants";
 import type { MapInnerHandle, LayerMode } from "./traffic-map-inner";
 import type { Map2DHandle } from "./traffic-map-2d";
@@ -108,7 +109,7 @@ export const TrafficMap = forwardRef<TrafficMapHandle, TrafficMapProps>(function
   const [hourlyIndex, setHourlyIndex] = useState<HourlyIndex | null>(null);
   const [loading, setLoading] = useState(false);
   const [layerMode, setLayerMode] = useState<LayerMode>("columns");
-  const [visibleLayers, setVisibleLayers] = useState({ sensors: true, vessels: true, trees: false, parking: false, hospitality: false, buildings: false });
+  const [visibleLayers, setVisibleLayers] = useState({ sensors: true, vessels: true, trees: false, parking: false, hospitality: false, buildings: false, flow: false });
   const [precinctFilter, setPrecinctFilter] = useState<string | null>(null);
   const [showFilters, setShowFilters] = useState(false);
   const [expanded, setExpanded] = useState(false);
@@ -124,6 +125,9 @@ export const TrafficMap = forwardRef<TrafficMapHandle, TrafficMapProps>(function
 
   // Building footprints (3D extruded buildings)
   const { geojson: buildingGeojson } = useBuildingLayer(visibleLayers.buildings);
+
+  // Pedestrian flow inference (computed from hourly data)
+  const flowTrips = useFlowLayer(visibleLayers.flow, dailySensors, hourlyIndex);
 
   const toggleLayer = (layer: keyof typeof visibleLayers) => {
     setVisibleLayers((prev) => ({ ...prev, [layer]: !prev[layer] }));
@@ -369,6 +373,22 @@ export const TrafficMap = forwardRef<TrafficMapHandle, TrafficMapProps>(function
               <Building2 className="h-3 w-3" />
               Buildings
             </button>
+            <button
+              onClick={() => {
+                const enabling = !visibleLayers.flow;
+                toggleLayer("flow");
+                // Auto-load hourly data and start playback when enabling flow
+                if (enabling && !hourlyIndex) {
+                  loadHourlyData();
+                }
+              }}
+              className={`flex items-center gap-1 rounded-md px-2 py-1 text-xs transition-colors ${
+                visibleLayers.flow ? "bg-rose-500/20 text-rose-400" : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              <Route className="h-3 w-3" />
+              Flow
+            </button>
 
             <span className="mx-1 text-border">|</span>
 
@@ -408,6 +428,7 @@ export const TrafficMap = forwardRef<TrafficMapHandle, TrafficMapProps>(function
                 parkingBays={parkingBays}
                 hospitalityVenues={hospitalityVenues}
                 buildingGeojson={buildingGeojson}
+                flowTrips={flowTrips}
                 layerMode={layerMode}
                 currentHour={mode === "hourly" ? currentTime : null}
                 theme={theme}

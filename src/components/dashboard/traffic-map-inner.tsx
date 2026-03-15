@@ -6,6 +6,7 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import { Deck } from "@deck.gl/core";
 import { ColumnLayer, ScatterplotLayer, PathLayer, GeoJsonLayer } from "@deck.gl/layers";
 import { HeatmapLayer } from "@deck.gl/aggregation-layers";
+import { TripsLayer } from "@deck.gl/geo-layers";
 import { LightingEffect, AmbientLight, DirectionalLight } from "@deck.gl/core";
 import { getSunState } from "@/lib/sun-position";
 import type { Vessel } from "@/lib/use-ais-stream";
@@ -13,6 +14,7 @@ import type { VesselTrail } from "@/lib/use-vessel-trails";
 import type { TreeMapPoint } from "@/lib/use-tree-layer";
 import type { ParkingBay } from "@/lib/use-parking-layer";
 import type { HospitalityVenue } from "@/lib/use-hospitality-layer";
+import type { FlowTrip } from "@/lib/flow-inference";
 
 export interface SensorData {
   sensor_id: number;
@@ -38,10 +40,11 @@ interface MapInnerProps {
   parkingBays?: ParkingBay[];
   hospitalityVenues?: HospitalityVenue[];
   buildingGeojson?: GeoJSON.FeatureCollection | null;
+  flowTrips?: FlowTrip[];
   layerMode?: LayerMode;
   currentHour?: number | null;
   theme?: "dark" | "light";
-  visibleLayers?: { sensors: boolean; vessels: boolean; trees: boolean; parking: boolean; hospitality: boolean; buildings: boolean };
+  visibleLayers?: { sensors: boolean; vessels: boolean; trees: boolean; parking: boolean; hospitality: boolean; buildings: boolean; flow: boolean };
   precinctFilter?: string | null;
 }
 
@@ -115,10 +118,10 @@ type TooltipData =
   | { type: "hospitality"; x: number; y: number; venue: HospitalityVenue }
   | { type: "building"; x: number; y: number; properties: Record<string, unknown> };
 
-const DEFAULT_VISIBLE = { sensors: true, vessels: true, trees: false, parking: false, hospitality: false, buildings: false };
+const DEFAULT_VISIBLE = { sensors: true, vessels: true, trees: false, parking: false, hospitality: false, buildings: false, flow: false };
 
 const MapInner = forwardRef<MapInnerHandle, MapInnerProps>(function MapInner(
-  { sensors, precinctNames, vessels, vesselTrails, trees, parkingBays, hospitalityVenues, buildingGeojson, layerMode = "columns", currentHour, theme = "dark", visibleLayers = DEFAULT_VISIBLE, precinctFilter },
+  { sensors, precinctNames, vessels, vesselTrails, trees, parkingBays, hospitalityVenues, buildingGeojson, flowTrips, layerMode = "columns", currentHour, theme = "dark", visibleLayers = DEFAULT_VISIBLE, precinctFilter },
   ref
 ) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -537,8 +540,32 @@ const MapInner = forwardRef<MapInnerHandle, MapInnerProps>(function MapInner(
       layers.unshift(buildingLayer);
     }
 
+    // Pedestrian flow layer (animated trails between sensors)
+    if (visibleLayers.flow && flowTrips && flowTrips.length > 0 && currentHour != null) {
+      const flowLayer = new TripsLayer<FlowTrip>({
+        id: "pedestrian-flow",
+        data: flowTrips,
+        getPath: (d) => d.path,
+        getTimestamps: (d) => d.timestamps,
+        getColor: (d) => [...d.color, Math.round(140 + d.magnitude * 115)] as [number, number, number, number],
+        getWidth: (d) => 2 + d.magnitude * 6,
+        widthMinPixels: 1.5,
+        widthMaxPixels: 10,
+        capRounded: true,
+        jointRounded: true,
+        trailLength: 0.6,  // trail fades over 0.6 hours (~36 min)
+        currentTime: currentHour,
+        opacity: 0.85,
+        updateTriggers: {
+          getColor: [flowTrips],
+          getWidth: [flowTrips],
+        },
+      });
+      layers.push(flowLayer);
+    }
+
     deckRef.current.setProps({ layers });
-  }, [sensors, precinctNames, vessels, vesselTrails, trees, parkingBays, hospitalityVenues, buildingGeojson, layerMode, visibleLayers, precinctFilter]);
+  }, [sensors, precinctNames, vessels, vesselTrails, trees, parkingBays, hospitalityVenues, buildingGeojson, flowTrips, currentHour, layerMode, visibleLayers, precinctFilter]);
 
   // Enable pointer events on deck canvas for hover
   useEffect(() => {
