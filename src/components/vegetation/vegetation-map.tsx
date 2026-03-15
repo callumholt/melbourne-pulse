@@ -1,155 +1,21 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import { Map as MapLibre, type MapMouseEvent } from "maplibre-gl";
+import { Map as MapLibre, type MapMouseEvent, addProtocol, removeProtocol } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
+import type { Protocol as ProtocolType } from "pmtiles";
+import { Layers } from "lucide-react";
 import { VegetationLegend } from "./vegetation-legend";
 import { VegetationLayerControls } from "./vegetation-layer-controls";
 import { VegetationInfoPanel } from "./vegetation-info-panel";
 import { AddressSearch } from "./address-search";
+import { SummaryStats, type LayerStats } from "./summary-stats";
+import { LAYER_DEFS, LAND_COVER_CLASSES, type LayerVisibility, type FeatureInfo, type LayerDef } from "./vegetation-types";
 
 const VIC_WFS_BASE = "https://opendata.maps.vic.gov.au/geoserver/wfs";
 
-export type LayerKey = "evc" | "plantation" | "nativeForest" | "vicforests" | "treeDensity";
-
-export type LayerVisibility = Record<LayerKey, boolean>;
-
-export interface FeatureInfo {
-  type: LayerKey;
-  properties: Record<string, string | number | null>;
-  lngLat: { lng: number; lat: number };
-}
-
-export interface LayerDef {
-  key: LayerKey;
-  label: string;
-  wfsTypeName: string;
-  sourceId: string;
-  fillLayerId: string;
-  outlineLayerId: string;
-  minZoom: number;
-  maxFeatures: number;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  fillPaint: Record<string, any>;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  outlinePaint: Record<string, any>;
-}
-
-export const LAYER_DEFS: LayerDef[] = [
-  {
-    key: "evc",
-    label: "Ecological Vegetation Classes",
-    wfsTypeName: "open-data-platform:nv2005_evcbcs",
-    sourceId: "evc-source",
-    fillLayerId: "evc-fill",
-    outlineLayerId: "evc-outline",
-    minZoom: 10,
-    maxFeatures: 2000,
-    fillPaint: {
-      "fill-color": [
-        "match", ["get", "evc_bcs_desc"],
-        "Endangered", "#dc2626",
-        "Vulnerable", "#f97316",
-        "Depleted", "#eab308",
-        "Rare", "#a855f7",
-        "Least Concern", "#22c55e",
-        "#6b7280",
-      ],
-      "fill-opacity": 0.45,
-    },
-    outlinePaint: { "line-color": "rgba(255,255,255,0.25)", "line-width": 0.5 },
-  },
-  {
-    key: "plantation",
-    label: "Plantations (Hardwood / Softwood)",
-    wfsTypeName: "open-data-platform:plantation",
-    sourceId: "plantation-source",
-    fillLayerId: "plantation-fill",
-    outlineLayerId: "plantation-outline",
-    minZoom: 9,
-    maxFeatures: 3000,
-    fillPaint: {
-      "fill-color": [
-        "match", ["get", "plantation_type"],
-        "HARDWOOD", "#7c3aed",
-        "SOFTWOOD", "#c084fc",
-        "#9333ea",
-      ],
-      "fill-opacity": 0.5,
-    },
-    outlinePaint: { "line-color": "rgba(192,132,252,0.5)", "line-width": 1 },
-  },
-  {
-    key: "nativeForest",
-    label: "Private Native Forest Stands",
-    wfsTypeName: "open-data-platform:sveg100",
-    sourceId: "native-forest-source",
-    fillLayerId: "native-forest-fill",
-    outlineLayerId: "native-forest-outline",
-    minZoom: 10,
-    maxFeatures: 2000,
-    fillPaint: {
-      "fill-color": [
-        "match", ["get", "x_vegform"],
-        "TALL OPEN FOREST", "#14532d",
-        "OPEN FOREST", "#166534",
-        "TALL WOODLAND", "#15803d",
-        "WOODLAND(OU)", "#16a34a",
-        "WOODLAND(GL)", "#22c55e",
-        "LOW OPEN FOREST", "#4ade80",
-        "LOW WOODLAND(OU)", "#86efac",
-        "LOW WOODLAND(GL)", "#bbf7d0",
-        "CLOSED SCRUB", "#064e3b",
-        "OPEN SCRUB", "#047857",
-        "SHRUBLAND", "#059669",
-        "#15803d",
-      ],
-      "fill-opacity": 0.5,
-    },
-    outlinePaint: { "line-color": "rgba(34,197,94,0.4)", "line-width": 0.5 },
-  },
-  {
-    key: "vicforests",
-    label: "VicForests Timber Allocation",
-    wfsTypeName: "open-data-platform:vicforests_allocation_apr2019",
-    sourceId: "vicforests-source",
-    fillLayerId: "vicforests-fill",
-    outlineLayerId: "vicforests-outline",
-    minZoom: 9,
-    maxFeatures: 3000,
-    fillPaint: {
-      "fill-color": [
-        "match", ["get", "forest_stands"],
-        "Ash", "#b91c1c",
-        "Mixed Species", "#ea580c",
-        "#dc2626",
-      ],
-      "fill-opacity": 0.4,
-    },
-    outlinePaint: { "line-color": "rgba(239,68,68,0.6)", "line-width": 1 },
-  },
-  {
-    key: "treeDensity",
-    label: "Tree Density (Vicmap)",
-    wfsTypeName: "open-data-platform:tree_density",
-    sourceId: "tree-density-source",
-    fillLayerId: "tree-density-fill",
-    outlineLayerId: "tree-density-outline",
-    minZoom: 11,
-    maxFeatures: 2000,
-    fillPaint: {
-      "fill-color": [
-        "match", ["get", "tree_density"],
-        "dense", "#14532d",
-        "medium", "#16a34a",
-        "sparse", "#86efac",
-        "#22c55e",
-      ],
-      "fill-opacity": 0.35,
-    },
-    outlinePaint: { "line-color": "rgba(134,239,172,0.3)", "line-width": 0.3 },
-  },
-];
+const BLOB_BASE = process.env.NEXT_PUBLIC_BLOB_URL ?? "";
+const USE_PMTILES = process.env.NEXT_PUBLIC_USE_PMTILES === "true";
 
 const DEFAULT_LAYERS: LayerVisibility = {
   evc: true,
@@ -157,6 +23,8 @@ const DEFAULT_LAYERS: LayerVisibility = {
   nativeForest: false,
   vicforests: false,
   treeDensity: false,
+  fireHistory: false,
+  landCover: false,
 };
 
 const VICTORIA_CENTER = { longitude: 145.5, latitude: -37.0 };
@@ -193,7 +61,7 @@ function buildWfsUrl(typeName: string, bbox: [number, number, number, number], c
   return `${VIC_WFS_BASE}?${params.toString()}`;
 }
 
-function addLayerToMap(map: MapLibre, def: LayerDef) {
+function addWfsLayerToMap(map: MapLibre, def: LayerDef) {
   if (!map.getSource(def.sourceId)) {
     map.addSource(def.sourceId, { type: "geojson", data: { type: "FeatureCollection", features: [] } });
   }
@@ -207,12 +75,109 @@ function addLayerToMap(map: MapLibre, def: LayerDef) {
   }
 }
 
+function addPmtilesLayerToMap(map: MapLibre, def: LayerDef) {
+  if (!BLOB_BASE || !def.pmtilesLayer) return;
+  const sourceId = `${def.sourceId}-pmtiles`;
+  if (!map.getSource(sourceId)) {
+    map.addSource(sourceId, {
+      type: "vector",
+      url: `pmtiles://${BLOB_BASE}/${def.pmtilesLayer}.pmtiles`,
+    });
+  }
+  if (!map.getLayer(def.fillLayerId)) {
+    map.addLayer({
+      id: def.fillLayerId,
+      type: "fill",
+      source: sourceId,
+      "source-layer": def.pmtilesLayer,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      paint: def.fillPaint as any,
+    });
+  }
+  if (!map.getLayer(def.outlineLayerId)) {
+    map.addLayer({
+      id: def.outlineLayerId,
+      type: "line",
+      source: sourceId,
+      "source-layer": def.pmtilesLayer,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      paint: def.outlinePaint as any,
+    });
+  }
+}
+
+function addLandCoverToMap(map: MapLibre) {
+  if (!BLOB_BASE) return;
+  const sourceId = "land-cover-source";
+  if (!map.getSource(sourceId)) {
+    map.addSource(sourceId, {
+      type: "raster",
+      url: `pmtiles://${BLOB_BASE}/land-cover.pmtiles`,
+      tileSize: 256,
+    });
+  }
+  if (!map.getLayer("land-cover-raster")) {
+    map.addLayer(
+      { id: "land-cover-raster", type: "raster", source: sourceId, paint: { "raster-opacity": 0.6 } },
+      "carto-layer",
+    );
+  }
+}
+
+function addLayerToMap(map: MapLibre, def: LayerDef) {
+  if (USE_PMTILES && def.pmtilesLayer && BLOB_BASE) {
+    addPmtilesLayerToMap(map, def);
+  } else {
+    addWfsLayerToMap(map, def);
+  }
+}
+
 function getMinActiveZoom(layers: LayerVisibility): number {
   let min = Infinity;
   for (const def of LAYER_DEFS) {
     if (layers[def.key]) min = Math.min(min, def.minZoom);
   }
   return min === Infinity ? 10 : min;
+}
+
+function computeStats(map: MapLibre, layers: LayerVisibility): LayerStats[] {
+  const stats: LayerStats[] = [];
+  for (const def of LAYER_DEFS) {
+    if (!layers[def.key]) continue;
+    if (!map.getLayer(def.fillLayerId)) continue;
+
+    const features = map.queryRenderedFeatures(undefined, { layers: [def.fillLayerId] });
+    if (features.length === 0) continue;
+
+    let totalHectares = 0;
+    const groups: Record<string, { count: number; hectares: number }> = {};
+
+    for (const f of features) {
+      const ha = Number(f.properties?.hectares ?? f.properties?.area_ha ?? 0);
+      totalHectares += ha;
+
+      let groupKey = "Other";
+      if (def.key === "evc") groupKey = String(f.properties?.evc_bcs_desc ?? "Other");
+      else if (def.key === "plantation") groupKey = String(f.properties?.plantation_type ?? "Other");
+      else if (def.key === "nativeForest") groupKey = String(f.properties?.x_vegform ?? "Other");
+      else if (def.key === "vicforests") groupKey = String(f.properties?.forest_stands ?? "Other");
+      else if (def.key === "treeDensity") groupKey = String(f.properties?.tree_density ?? "Other");
+      else if (def.key === "fireHistory") groupKey = String(f.properties?.firetype ?? "Other");
+
+      if (!groups[groupKey]) groups[groupKey] = { count: 0, hectares: 0 };
+      groups[groupKey].count++;
+      groups[groupKey].hectares += ha;
+    }
+
+    stats.push({
+      layerKey: def.key,
+      label: def.label,
+      featureCount: features.length,
+      totalHectares,
+      groups,
+    });
+  }
+  return stats;
 }
 
 export function VegetationMap() {
@@ -222,8 +187,22 @@ export function VegetationMap() {
   const [layers, setLayers] = useState<LayerVisibility>(DEFAULT_LAYERS);
   const [loading, setLoading] = useState(false);
   const [theme, setTheme] = useState<"dark" | "light">("dark");
+  const [mobileControlsOpen, setMobileControlsOpen] = useState(false);
+  const [stats, setStats] = useState<LayerStats[]>([]);
   const layersRef = useRef(layers);
   layersRef.current = layers;
+
+  // Register PMTiles protocol once (dynamic import to avoid SSR issues)
+  useEffect(() => {
+    let protocol: ProtocolType | null = null;
+    import("pmtiles").then(({ Protocol }) => {
+      protocol = new Protocol();
+      addProtocol("pmtiles", protocol.tile);
+    });
+    return () => {
+      if (protocol) removeProtocol("pmtiles");
+    };
+  }, []);
 
   // Detect theme
   useEffect(() => {
@@ -237,6 +216,11 @@ export function VegetationMap() {
   }, []);
 
   const loadLayerData = useCallback(async (map: MapLibre, def: LayerDef) => {
+    // PMTiles layers don't need WFS fetching
+    if (USE_PMTILES && def.pmtilesLayer && BLOB_BASE) return;
+    // Land cover is raster, no WFS
+    if (def.key === "landCover") return;
+
     const zoom = map.getZoom();
     if (zoom < def.minZoom) return;
 
@@ -255,18 +239,28 @@ export function VegetationMap() {
     }
   }, []);
 
+  const updateStats = useCallback((map: MapLibre) => {
+    const currentLayers = layersRef.current;
+    const newStats = computeStats(map, currentLayers);
+    setStats(newStats);
+  }, []);
+
   const loadAllVisibleLayers = useCallback(async (map: MapLibre) => {
     const currentLayers = layersRef.current;
     const activeDefs = LAYER_DEFS.filter((d) => currentLayers[d.key]);
-    if (activeDefs.length === 0) return;
+    if (activeDefs.length === 0) {
+      setStats([]);
+      return;
+    }
 
     setLoading(true);
     try {
       await Promise.allSettled(activeDefs.map((def) => loadLayerData(map, def)));
     } finally {
       setLoading(false);
+      updateStats(map);
     }
-  }, [loadLayerData]);
+  }, [loadLayerData, updateStats]);
 
   // Initialise map
   useEffect(() => {
@@ -282,21 +276,34 @@ export function VegetationMap() {
     });
 
     map.on("load", () => {
+      // Add land cover raster (below other layers)
+      if (BLOB_BASE) {
+        addLandCoverToMap(map);
+        const lcVis = layersRef.current.landCover ? "visible" : "none";
+        if (map.getLayer("land-cover-raster")) {
+          map.setLayoutProperty("land-cover-raster", "visibility", lcVis);
+        }
+      }
+
       for (const def of LAYER_DEFS) {
         addLayerToMap(map, def);
-        // Set initial visibility
         const vis = layersRef.current[def.key] ? "visible" : "none";
-        map.setLayoutProperty(def.fillLayerId, "visibility", vis);
-        map.setLayoutProperty(def.outlineLayerId, "visibility", vis);
+        if (map.getLayer(def.fillLayerId)) {
+          map.setLayoutProperty(def.fillLayerId, "visibility", vis);
+          map.setLayoutProperty(def.outlineLayerId, "visibility", vis);
+        }
       }
       loadAllVisibleLayers(map);
     });
 
-    // Reload data on move end
+    // Reload data on move end + update stats
     let moveTimeout: ReturnType<typeof setTimeout>;
+    let statsTimeout: ReturnType<typeof setTimeout>;
     map.on("moveend", () => {
       clearTimeout(moveTimeout);
       moveTimeout = setTimeout(() => loadAllVisibleLayers(map), 300);
+      clearTimeout(statsTimeout);
+      statsTimeout = setTimeout(() => updateStats(map), 500);
     });
 
     // Click handler for all fill layers
@@ -326,6 +333,7 @@ export function VegetationMap() {
 
     return () => {
       clearTimeout(moveTimeout);
+      clearTimeout(statsTimeout);
       map.remove();
       mapRef.current = null;
     };
@@ -338,6 +346,13 @@ export function VegetationMap() {
     if (!map) return;
     map.setStyle(makeStyle(theme));
     map.once("styledata", () => {
+      if (BLOB_BASE) {
+        addLandCoverToMap(map);
+        const lcVis = layersRef.current.landCover ? "visible" : "none";
+        if (map.getLayer("land-cover-raster")) {
+          map.setLayoutProperty("land-cover-raster", "visibility", lcVis);
+        }
+      }
       for (const def of LAYER_DEFS) {
         addLayerToMap(map, def);
         const vis = layersRef.current[def.key] ? "visible" : "none";
@@ -357,6 +372,11 @@ export function VegetationMap() {
 
     if (!map || !map.isStyleLoaded()) return;
 
+    // Handle land cover raster separately
+    if (map.getLayer("land-cover-raster")) {
+      map.setLayoutProperty("land-cover-raster", "visibility", newLayers.landCover ? "visible" : "none");
+    }
+
     for (const def of LAYER_DEFS) {
       const vis = newLayers[def.key] ? "visible" : "none";
       if (map.getLayer(def.fillLayerId)) {
@@ -368,7 +388,10 @@ export function VegetationMap() {
         loadLayerData(map, def).catch(console.error);
       }
     }
-  }, [layers, loadLayerData]);
+
+    // Update stats after toggle
+    setTimeout(() => updateStats(map), 200);
+  }, [layers, loadLayerData, updateStats]);
 
   const minZoom = getMinActiveZoom(layers);
 
@@ -385,16 +408,32 @@ export function VegetationMap() {
       <AddressSearch onSelect={handleAddressSelect} />
 
       {loading && (
-        <div className="absolute left-4 top-16 rounded-md bg-background/80 px-3 py-1.5 text-sm text-muted-foreground backdrop-blur-sm">
+        <div className="absolute left-4 top-16 rounded-md bg-background/80 px-3 py-1.5 text-sm text-muted-foreground backdrop-blur-sm md:left-4 md:top-16">
           Loading vegetation data...
         </div>
       )}
 
       <ZoomHint mapRef={mapRef} minZoom={minZoom} />
 
-      <VegetationLayerControls layers={layers} onToggle={handleLayerToggle} />
+      {/* Mobile layer toggle button */}
+      <button
+        onClick={() => setMobileControlsOpen(!mobileControlsOpen)}
+        className="absolute right-4 top-4 z-20 flex h-10 w-10 items-center justify-center rounded-lg border border-border/40 bg-background/80 backdrop-blur-sm md:hidden"
+        aria-label="Toggle layers"
+      >
+        <Layers className="h-5 w-5" />
+      </button>
+
+      <VegetationLayerControls
+        layers={layers}
+        onToggle={handleLayerToggle}
+        mobileOpen={mobileControlsOpen}
+        onMobileClose={() => setMobileControlsOpen(false)}
+      />
 
       <VegetationLegend layers={layers} />
+
+      <SummaryStats stats={stats} />
 
       {featureInfo && (
         <VegetationInfoPanel info={featureInfo} onClose={() => setFeatureInfo(null)} />
