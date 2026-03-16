@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useImperativeHandle, forwardRef, useMemo } from "react";
-import { Map as MapLibre } from "maplibre-gl";
+import { Map as MapLibre, NavigationControl } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { Deck } from "@deck.gl/core";
 import { ColumnLayer, ScatterplotLayer, PathLayer, GeoJsonLayer } from "@deck.gl/layers";
@@ -198,6 +198,11 @@ const MapInner = forwardRef<MapInnerHandle, MapInnerProps>(function MapInner(
       pitch: INITIAL_VIEW.pitch,
       bearing: INITIAL_VIEW.bearing,
     });
+
+    map.addControl(
+      new NavigationControl({ visualizePitch: true, showCompass: true, showZoom: true }),
+      "top-right",
+    );
 
     const deck = new Deck({
       parent: containerRef.current,
@@ -453,12 +458,13 @@ const MapInner = forwardRef<MapInnerHandle, MapInnerProps>(function MapInner(
         radiusMaxPixels: 16,
         lineWidthMinPixels: 2,
         getPosition: (d) => {
-          // Only animate airborne aircraft
+          // Use altitude as Z coordinate so aircraft render at their actual height
+          const alt = d.onGround ? 0 : (d.altitude ?? 0);
           if (!d.onGround) {
             const anim = animatedAircraftPositions?.get(d.icao24);
-            if (anim) return [anim[1], anim[0]];
+            if (anim) return [anim[1], anim[0], alt];
           }
-          return [d.lon, d.lat];
+          return [d.lon, d.lat, alt];
         },
         getRadius: (d) => {
           if (d.onGround) return 60;
@@ -495,6 +501,52 @@ const MapInner = forwardRef<MapInnerHandle, MapInnerProps>(function MapInner(
       });
 
       layers.push(aircraftLayer);
+
+      // Altitude stems — vertical lines from ground to airborne aircraft
+      const airborne = aircraftArray.filter((a) => !a.onGround && (a.altitude ?? 0) > 50);
+      if (airborne.length > 0) {
+        const stemLayer = new PathLayer<Aircraft>({
+          id: "aircraft-altitude-stems",
+          data: airborne,
+          getPath: (d) => {
+            const alt = d.altitude ?? 0;
+            const anim = animatedAircraftPositions?.get(d.icao24);
+            const lon = anim ? anim[1] : d.lon;
+            const lat = anim ? anim[0] : d.lat;
+            return [[lon, lat, 0], [lon, lat, alt]];
+          },
+          getColor: isDark ? [255, 255, 255, 40] : [0, 0, 0, 30],
+          getWidth: 1,
+          widthMinPixels: 1,
+          widthMaxPixels: 1,
+          updateTriggers: {
+            getPath: [animatedAircraftPositions],
+          },
+        });
+        layers.push(stemLayer);
+
+        // Ground shadow — small dot at ground level below each aircraft
+        const shadowLayer = new ScatterplotLayer<Aircraft>({
+          id: "aircraft-shadows",
+          data: airborne,
+          filled: true,
+          stroked: false,
+          radiusMinPixels: 3,
+          radiusMaxPixels: 8,
+          getPosition: (d) => {
+            const anim = animatedAircraftPositions?.get(d.icao24);
+            const lon = anim ? anim[1] : d.lon;
+            const lat = anim ? anim[0] : d.lat;
+            return [lon, lat, 0];
+          },
+          getRadius: 40,
+          getFillColor: isDark ? [255, 255, 255, 30] : [0, 0, 0, 20],
+          updateTriggers: {
+            getPosition: [animatedAircraftPositions],
+          },
+        });
+        layers.push(shadowLayer);
+      }
     }
 
     // Parking bay layer
