@@ -10,6 +10,7 @@ import { TripsLayer } from "@deck.gl/geo-layers";
 import { LightingEffect, AmbientLight, DirectionalLight } from "@deck.gl/core";
 import { getSunState } from "@/lib/sun-position";
 import type { Vessel } from "@/lib/use-ais-stream";
+import type { Aircraft } from "@/lib/use-aircraft-stream";
 import type { VesselTrail } from "@/lib/use-vessel-trails";
 import type { TreeMapPoint } from "@/lib/use-tree-layer";
 import type { ParkingBay } from "@/lib/use-parking-layer";
@@ -36,6 +37,9 @@ interface MapInnerProps {
   precinctNames: Record<string, { name: string; colour: string }>;
   vessels?: Map<number, Vessel>;
   vesselTrails?: VesselTrail[];
+  aircraft?: Map<string, Aircraft>;
+  animatedVesselPositions?: Map<number, [number, number]>;
+  animatedAircraftPositions?: Map<string, [number, number]>;
   trees?: TreeMapPoint[];
   parkingBays?: ParkingBay[];
   hospitalityVenues?: HospitalityVenue[];
@@ -44,7 +48,7 @@ interface MapInnerProps {
   layerMode?: LayerMode;
   currentHour?: number | null;
   theme?: "dark" | "light";
-  visibleLayers?: { sensors: boolean; vessels: boolean; trees: boolean; parking: boolean; hospitality: boolean; buildings: boolean; flow: boolean };
+  visibleLayers?: { sensors: boolean; vessels: boolean; trees: boolean; parking: boolean; hospitality: boolean; buildings: boolean; flow: boolean; aircraft: boolean };
   precinctFilter?: string | null;
 }
 
@@ -57,7 +61,8 @@ const INITIAL_VIEW = {
 };
 
 function makeStyle(theme: "dark" | "light") {
-  const tileVariant = theme === "dark" ? "dark_all" : "light_all";
+  // dark_all: dark basemap; voyager: high-contrast light basemap with coloured roads/labels
+  const tileVariant = theme === "dark" ? "dark_all" : "voyager";
   return {
     version: 8 as const,
     sources: {
@@ -113,15 +118,16 @@ function hexToRgb(hex: string): [number, number, number] {
 type TooltipData =
   | { type: "sensor"; x: number; y: number; sensor: SensorData }
   | { type: "vessel"; x: number; y: number; vessel: Vessel }
+  | { type: "aircraft"; x: number; y: number; aircraft: Aircraft }
   | { type: "tree"; x: number; y: number; tree: TreeMapPoint }
   | { type: "parking"; x: number; y: number; bay: ParkingBay }
   | { type: "hospitality"; x: number; y: number; venue: HospitalityVenue }
   | { type: "building"; x: number; y: number; properties: Record<string, unknown> };
 
-const DEFAULT_VISIBLE = { sensors: true, vessels: true, trees: false, parking: false, hospitality: false, buildings: false, flow: false };
+const DEFAULT_VISIBLE = { sensors: true, vessels: true, trees: false, parking: false, hospitality: false, buildings: false, flow: false, aircraft: true };
 
 const MapInner = forwardRef<MapInnerHandle, MapInnerProps>(function MapInner(
-  { sensors, precinctNames, vessels, vesselTrails, trees, parkingBays, hospitalityVenues, buildingGeojson, flowTrips, layerMode = "columns", currentHour, theme = "dark", visibleLayers = DEFAULT_VISIBLE, precinctFilter },
+  { sensors, precinctNames, vessels, vesselTrails, aircraft, animatedVesselPositions, animatedAircraftPositions, trees, parkingBays, hospitalityVenues, buildingGeojson, flowTrips, layerMode = "columns", currentHour, theme = "dark", visibleLayers = DEFAULT_VISIBLE, precinctFilter },
   ref
 ) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -385,7 +391,7 @@ const MapInner = forwardRef<MapInnerHandle, MapInnerProps>(function MapInner(
       layers.push(trailLayer);
     }
 
-    // Vessel markers
+    // Vessel markers (animated)
     if (visibleLayers.vessels && vessels && vessels.size > 0) {
       const vesselArray = Array.from(vessels.values());
 
@@ -399,7 +405,10 @@ const MapInner = forwardRef<MapInnerHandle, MapInnerProps>(function MapInner(
         radiusMinPixels: 4,
         radiusMaxPixels: 12,
         lineWidthMinPixels: 1,
-        getPosition: (d) => [d.lon, d.lat],
+        getPosition: (d) => {
+          const anim = animatedVesselPositions?.get(d.mmsi);
+          return anim ? [anim[1], anim[0]] : [d.lon, d.lat];
+        },
         getRadius: (d) => {
           return d.sog > 1 ? 80 : 50;
         },
@@ -418,13 +427,74 @@ const MapInner = forwardRef<MapInnerHandle, MapInnerProps>(function MapInner(
           }
         },
         updateTriggers: {
-          getPosition: [vessels],
+          getPosition: [animatedVesselPositions],
           getFillColor: [vessels],
           getRadius: [vessels],
         },
       });
 
       layers.push(vesselLayer);
+    }
+
+    // Aircraft markers (animated)
+    if (visibleLayers.aircraft && aircraft && aircraft.size > 0) {
+      const aircraftArray = Array.from(aircraft.values());
+
+      const isDark = theme === "dark";
+
+      const aircraftLayer = new ScatterplotLayer<Aircraft>({
+        id: "aircraft-markers",
+        data: aircraftArray,
+        pickable: true,
+        stroked: true,
+        filled: true,
+        radiusScale: 1,
+        radiusMinPixels: 6,
+        radiusMaxPixels: 16,
+        lineWidthMinPixels: 2,
+        getPosition: (d) => {
+          // Only animate airborne aircraft
+          if (!d.onGround) {
+            const anim = animatedAircraftPositions?.get(d.icao24);
+            if (anim) return [anim[1], anim[0]];
+          }
+          return [d.lon, d.lat];
+        },
+        getRadius: (d) => {
+          if (d.onGround) return 60;
+          return d.velocity > 100 ? 120 : 80;
+        },
+        getFillColor: (d) => {
+          // Ground aircraft: orange on dark, dark orange on light
+          if (d.onGround) return isDark
+            ? [245, 158, 11, 180] as [number, number, number, number]
+            : [217, 119, 6, 220] as [number, number, number, number];
+          // Airborne: colour by altitude with strong contrast for both themes
+          const alt = d.altitude ?? 0;
+          if (alt < 1000) return [220, 38, 38, 230] as [number, number, number, number];   // red — low
+          if (alt < 5000) return [168, 34, 220, 240] as [number, number, number, number];   // purple — mid
+          return isDark
+            ? [232, 121, 249, 240] as [number, number, number, number]   // bright magenta — high (dark)
+            : [126, 34, 206, 240] as [number, number, number, number];   // deep violet — high (light)
+        },
+        getLineColor: isDark ? [255, 255, 255, 140] : [0, 0, 0, 100],
+        getLineWidth: 1.5,
+        onHover: (info) => {
+          if (info.object) {
+            setTooltip({ type: "aircraft", x: info.x, y: info.y, aircraft: info.object });
+          } else {
+            setTooltip((prev) => prev?.type === "aircraft" ? null : prev);
+          }
+        },
+        updateTriggers: {
+          getPosition: [animatedAircraftPositions],
+          getFillColor: [aircraft, theme],
+          getRadius: [aircraft],
+          getLineColor: [theme],
+        },
+      });
+
+      layers.push(aircraftLayer);
     }
 
     // Parking bay layer
@@ -565,7 +635,7 @@ const MapInner = forwardRef<MapInnerHandle, MapInnerProps>(function MapInner(
     }
 
     deckRef.current.setProps({ layers });
-  }, [sensors, precinctNames, vessels, vesselTrails, trees, parkingBays, hospitalityVenues, buildingGeojson, flowTrips, currentHour, layerMode, visibleLayers, precinctFilter]);
+  }, [sensors, precinctNames, vessels, vesselTrails, aircraft, animatedVesselPositions, animatedAircraftPositions, trees, parkingBays, hospitalityVenues, buildingGeojson, flowTrips, currentHour, layerMode, visibleLayers, precinctFilter]);
 
   // Enable pointer events on deck canvas for hover
   useEffect(() => {
@@ -648,6 +718,44 @@ const MapInner = forwardRef<MapInnerHandle, MapInnerProps>(function MapInner(
 
             <div className="mt-1.5 text-[10px] text-muted-foreground/60">
               MMSI {v.mmsi}
+            </div>
+          </div>
+        );
+      })()}
+      {tooltip?.type === "aircraft" && (() => {
+        const a = tooltip.aircraft;
+        const altStr = a.altitude != null ? `${Math.round(a.altitude).toLocaleString()}m` : "N/A";
+        const speedKts = Math.round(a.velocity * 1.94384); // m/s to knots
+        const vertStr = a.verticalRate != null
+          ? a.verticalRate > 0.5 ? "Climbing" : a.verticalRate < -0.5 ? "Descending" : "Level"
+          : null;
+        return (
+          <div
+            className="pointer-events-none absolute z-50 min-w-[180px] rounded-lg border border-border/40 bg-popover px-3 py-2.5 text-sm text-popover-foreground shadow-lg"
+            style={{ left: tooltip.x + 12, top: tooltip.y - 12 }}
+          >
+            <div className="font-semibold">{a.callsign || a.icao24}</div>
+            <div className="text-xs text-muted-foreground">
+              {a.originCountry}
+              {a.callsign && <span className="ml-2 text-fuchsia-400">{a.icao24}</span>}
+            </div>
+
+            <div className="mt-1.5 grid grid-cols-2 gap-x-4 gap-y-0.5 text-xs">
+              <span className="text-muted-foreground">Altitude</span>
+              <span className="font-medium tabular-nums">{altStr}</span>
+
+              <span className="text-muted-foreground">Speed</span>
+              <span className="font-medium tabular-nums">{speedKts} kn</span>
+
+              <span className="text-muted-foreground">Track</span>
+              <span className="font-medium tabular-nums">{Math.round(a.track)}&deg;</span>
+
+              {vertStr && (
+                <>
+                  <span className="text-muted-foreground">Vertical</span>
+                  <span className="font-medium">{vertStr}</span>
+                </>
+              )}
             </div>
           </div>
         );

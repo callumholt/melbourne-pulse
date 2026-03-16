@@ -5,9 +5,11 @@ import dynamic from "next/dynamic";
 import { Card, CardContent } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { format, subDays } from "date-fns";
-import { Columns3, Flame, TreePine, Ship, Users, Filter, Maximize2, Minimize2, ParkingSquare, UtensilsCrossed, Building2, Route } from "lucide-react";
+import { Columns3, Flame, TreePine, Ship, Users, Filter, Maximize2, Minimize2, ParkingSquare, UtensilsCrossed, Building2, Route, Plane } from "lucide-react";
 import { useAisStream } from "@/lib/use-ais-stream";
+import { useAircraftStream } from "@/lib/use-aircraft-stream";
 import { useVesselTrails } from "@/lib/use-vessel-trails";
+import { useAnimatedPositions, type Trackable } from "@/lib/use-animated-positions";
 import { useDeviceType } from "@/lib/use-device-type";
 import { useTreeLayer } from "@/lib/use-tree-layer";
 import { useParkingLayer } from "@/lib/use-parking-layer";
@@ -100,6 +102,42 @@ export const TrafficMap = forwardRef<TrafficMapHandle, TrafficMapProps>(function
   const { vessels, connected: aisConnected, vesselCount } = useAisStream(!isMobile);
   const vesselTrails = useVesselTrails(vessels, !isMobile);
 
+  // Aircraft tracking
+  const { aircraft, connected: aircraftConnected, count: aircraftCount } = useAircraftStream(!isMobile);
+
+  // Animated positions for smooth movement (dead reckoning at 60fps)
+  const vesselTrackables = useMemo(() => {
+    const map = new Map<number, Trackable>();
+    for (const [mmsi, v] of vessels) {
+      map.set(mmsi, {
+        lat: v.lat,
+        lon: v.lon,
+        speed: v.sog * 0.514444, // knots to m/s
+        course: v.cog,
+        lastUpdate: v.lastUpdate,
+      });
+    }
+    return map;
+  }, [vessels]);
+
+  const aircraftTrackables = useMemo(() => {
+    const map = new Map<string, Trackable>();
+    for (const [icao, a] of aircraft) {
+      if (a.onGround) continue;
+      map.set(icao, {
+        lat: a.lat,
+        lon: a.lon,
+        speed: a.velocity,
+        course: a.track,
+        lastUpdate: a.lastUpdate,
+      });
+    }
+    return map;
+  }, [aircraft]);
+
+  const animatedVesselPositions = useAnimatedPositions(vesselTrackables, !isMobile);
+  const animatedAircraftPositions = useAnimatedPositions(aircraftTrackables, !isMobile);
+
   // Map refs for flyTo
   const mapRef = useRef<MapInnerHandle>(null);
   const map2DRef = useRef<Map2DHandle>(null);
@@ -109,7 +147,7 @@ export const TrafficMap = forwardRef<TrafficMapHandle, TrafficMapProps>(function
   const [hourlyIndex, setHourlyIndex] = useState<HourlyIndex | null>(null);
   const [loading, setLoading] = useState(false);
   const [layerMode, setLayerMode] = useState<LayerMode>("columns");
-  const [visibleLayers, setVisibleLayers] = useState({ sensors: true, vessels: true, trees: false, parking: false, hospitality: false, buildings: false, flow: false });
+  const [visibleLayers, setVisibleLayers] = useState({ sensors: true, vessels: true, trees: false, parking: false, hospitality: false, buildings: false, flow: false, aircraft: true });
   const [precinctFilter, setPrecinctFilter] = useState<string | null>(null);
   const [showFilters, setShowFilters] = useState(false);
   const [expanded, setExpanded] = useState(false);
@@ -338,6 +376,15 @@ export const TrafficMap = forwardRef<TrafficMapHandle, TrafficMapProps>(function
               Vessels
             </button>
             <button
+              onClick={() => toggleLayer("aircraft")}
+              className={`flex items-center gap-1 rounded-md px-2 py-1 text-xs transition-colors ${
+                visibleLayers.aircraft ? "bg-fuchsia-500/20 text-fuchsia-400" : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              <Plane className="h-3 w-3" />
+              Aircraft
+            </button>
+            <button
               onClick={() => toggleLayer("trees")}
               className={`flex items-center gap-1 rounded-md px-2 py-1 text-xs transition-colors ${
                 visibleLayers.trees ? "bg-green-500/20 text-green-400" : "text-muted-foreground hover:text-foreground"
@@ -424,6 +471,9 @@ export const TrafficMap = forwardRef<TrafficMapHandle, TrafficMapProps>(function
                 precinctNames={precinctNames}
                 vessels={vessels}
                 vesselTrails={vesselTrails}
+                aircraft={aircraft}
+                animatedVesselPositions={animatedVesselPositions}
+                animatedAircraftPositions={animatedAircraftPositions}
                 trees={trees}
                 parkingBays={parkingBays}
                 hospitalityVenues={hospitalityVenues}
@@ -437,8 +487,9 @@ export const TrafficMap = forwardRef<TrafficMapHandle, TrafficMapProps>(function
               />
             )}
 
-            {/* Vessel tracking indicator */}
-            <div className="absolute left-3 top-3 z-10 flex items-center gap-2 rounded-md bg-black/60 px-2.5 py-1.5 backdrop-blur-sm">
+            {/* Tracking indicators */}
+            <div className="absolute left-3 top-3 z-10 flex flex-col gap-1.5">
+              <div className="flex items-center gap-2 rounded-md bg-black/60 px-2.5 py-1.5 backdrop-blur-sm">
                 <span className="relative flex h-2 w-2">
                   {aisConnected ? (
                     <>
@@ -455,6 +506,24 @@ export const TrafficMap = forwardRef<TrafficMapHandle, TrafficMapProps>(function
                     : "Connecting to AIS..."}
                 </span>
               </div>
+              <div className="flex items-center gap-2 rounded-md bg-black/60 px-2.5 py-1.5 backdrop-blur-sm">
+                <span className="relative flex h-2 w-2">
+                  {aircraftConnected ? (
+                    <>
+                      <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-fuchsia-400 opacity-75" />
+                      <span className="relative inline-flex h-2 w-2 rounded-full bg-fuchsia-500" />
+                    </>
+                  ) : (
+                    <span className="relative inline-flex h-2 w-2 rounded-full bg-gray-500" />
+                  )}
+                </span>
+                <span className="text-xs text-white/70">
+                  {aircraftConnected
+                    ? `${aircraftCount} aircraft over Melbourne`
+                    : "Connecting to OpenSky..."}
+                </span>
+              </div>
+            </div>
 
             {/* Playback controls overlay */}
             <div className="absolute bottom-0 left-0 right-0 z-10 bg-gradient-to-t from-black/80 to-transparent px-4 pb-4 pt-8">
