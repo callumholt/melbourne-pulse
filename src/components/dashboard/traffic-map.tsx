@@ -167,12 +167,14 @@ export const TrafficMap = forwardRef<TrafficMapHandle, TrafficMapProps>(function
   // Building footprints (3D extruded buildings)
   const { geojson: buildingGeojson } = useBuildingLayer(visibleLayers.buildings);
 
-  // Street routes for flow paths (pre-fetched from OSRM)
+  // Street routes for flow paths — pre-fetched as soon as hourly data loads,
+  // regardless of whether the flow layer is currently visible, so routes are
+  // already cached by the time the user enables the flow layer.
   const flowSensorPairs = useMemo(() => {
-    if (!visibleLayers.flow || !hourlyIndex) return [];
+    if (!hourlyIndex) return [];
     return getFlowSensorPairs(dailySensors, hourlyIndex);
-  }, [visibleLayers.flow, dailySensors, hourlyIndex]);
-  const streetRoutes = useStreetRoutes(flowSensorPairs, visibleLayers.flow);
+  }, [dailySensors, hourlyIndex]);
+  const streetRoutes = useStreetRoutes(flowSensorPairs, !!hourlyIndex);
 
   // Pedestrian flow inference (computed from hourly data, uses street routes when available)
   const flowTrips = useFlowLayer(visibleLayers.flow, dailySensors, hourlyIndex, streetRoutes);
@@ -219,6 +221,16 @@ export const TrafficMap = forwardRef<TrafficMapHandle, TrafficMapProps>(function
     setPlaying(false);
     setCurrentTime(0);
   }, [selectedDate, initialDate, initialSensors]);
+
+  // Pre-fetch hourly data in the background so street routes can be cached early
+  useEffect(() => {
+    fetch(`/api/sensors/hourly?date=${selectedDate}`)
+      .then((res) => res.json())
+      .then((data: HourlySensorRow[]) => {
+        setHourlyIndex((prev) => prev ?? buildHourlyIndex(data));
+      })
+      .catch(() => {/* silent — user can still click play to retry */});
+  }, [selectedDate]);
 
   // Fetch hourly data when entering hourly mode
   const loadHourlyData = useCallback(() => {
