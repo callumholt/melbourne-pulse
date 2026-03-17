@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+export const maxDuration = 60;
 
 interface PairRequest {
   key: string; // "fromId-toId"
@@ -21,16 +22,13 @@ async function fetchOneRoute(
   try {
     const res = await fetch(osrmUrl, {
       headers: { "User-Agent": "MelbournePulse/1.0" },
-      signal: AbortSignal.timeout(10_000),
+      signal: AbortSignal.timeout(8_000),
     });
 
     if (!res.ok) return null;
 
     const data = await res.json();
-    if (
-      data.code !== "Ok" ||
-      !data.routes?.[0]?.geometry?.coordinates
-    ) {
+    if (data.code !== "Ok" || !data.routes?.[0]?.geometry?.coordinates) {
       return null;
     }
 
@@ -41,11 +39,32 @@ async function fetchOneRoute(
 }
 
 /**
+ * Run an array of async tasks with a maximum concurrency limit.
+ */
+async function withConcurrency<T>(
+  tasks: (() => Promise<T>)[],
+  limit: number,
+): Promise<T[]> {
+  const results: T[] = new Array(tasks.length);
+  let next = 0;
+
+  async function worker() {
+    while (next < tasks.length) {
+      const i = next++;
+      results[i] = await tasks[i]();
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(limit, tasks.length) }, worker));
+  return results;
+}
+
+/**
  * POST /api/routes/batch
  *
  * Accepts { pairs: PairRequest[] } and returns { routes: Record<key, coords[]> }.
- * Fetches from OSRM sequentially server-side with 100ms delay between requests
- * to avoid rate limiting. Results are cached in-process.
+ * Fetches from OSRM in parallel (up to 8 concurrent) with server-side in-process
+ * cache. Client should chunk large pair lists into batches of ~25.
  */
 export async function POST(req: NextRequest) {
   let body: { pairs: PairRequest[] };
@@ -60,30 +79,29 @@ export async function POST(req: NextRequest) {
   }
 
   const results: Record<string, [number, number][]> = {};
-  let fetched = 0;
+  const toFetch: PairRequest[] = [];
 
+  // Return cached pairs immediately
   for (const pair of body.pairs) {
-    // Check server cache first
     const cacheKey = `${pair.from}-${pair.to}`;
     const cached = routeCache.get(cacheKey);
     if (cached) {
       results[pair.key] = cached;
-      continue;
-    }
-
-    // Fetch from OSRM
-    const coords = await fetchOneRoute(pair.from, pair.to);
-    if (coords && coords.length >= 2) {
-      routeCache.set(cacheKey, coords);
-      results[pair.key] = coords;
-    }
-
-    fetched++;
-    // Throttle — 100ms between OSRM requests
-    if (fetched < body.pairs.length) {
-      await new Promise((r) => setTimeout(r, 100));
+    } else {
+      toFetch.push(pair);
     }
   }
+
+  // Fetch uncached pairs in parallel (concurrency 8)
+  const tasks = toFetch.map((pair) => async () => {
+    const coords = await fetchOneRoute(pair.from, pair.to);
+    if (coords && coords.length >= 2) {
+      routeCache.set(`${pair.from}-${pair.to}`, coords);
+      results[pair.key] = coords;
+    }
+  });
+
+  await withConcurrency(tasks, 8);
 
   return NextResponse.json({ routes: results });
 }
