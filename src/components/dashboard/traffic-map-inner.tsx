@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, useImperativeHandle, forwardRef, useMemo }
 import { Map as MapLibre, NavigationControl } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { Deck } from "@deck.gl/core";
-import { ColumnLayer, ScatterplotLayer, PathLayer, GeoJsonLayer } from "@deck.gl/layers";
+import { ColumnLayer, ScatterplotLayer, PathLayer, GeoJsonLayer, IconLayer } from "@deck.gl/layers";
 import { HeatmapLayer } from "@deck.gl/aggregation-layers";
 import { TripsLayer } from "@deck.gl/geo-layers";
 import { LightingEffect, AmbientLight, DirectionalLight } from "@deck.gl/core";
@@ -84,6 +84,28 @@ function makeStyle(theme: "dark" | "light") {
     ],
   };
 }
+
+// SVG icon data URIs — white silhouettes, tinted via IconLayer getColor
+// Must include explicit width/height attrs for createImageBitmap compatibility
+// Boat: top-down view pointing up (north)
+const BOAT_ICON_SVG = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" fill="white"><path d="M32 4 L24 20 L22 44 L24 52 Q28 58 32 60 Q36 58 40 52 L42 44 L40 20 Z"/><path d="M26 24 L38 24 L40 20 L32 4 L24 20 Z" fill-opacity="0.6"/><rect x="29" y="22" width="6" height="10" rx="1" fill-opacity="0.4"/></svg>`)}`;
+
+// Plane: top-down view pointing up (north)
+const PLANE_ICON_SVG = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" fill="white"><path d="M32 2 L30 16 L14 28 L14 33 L30 27 L30 46 L22 52 L22 56 L32 52 L42 56 L42 52 L34 46 L34 27 L50 33 L50 28 L34 16 Z"/></svg>`)}`;
+
+const BOAT_ICON = {
+  url: BOAT_ICON_SVG,
+  width: 64,
+  height: 64,
+  anchorY: 32,
+};
+
+const PLANE_ICON = {
+  url: PLANE_ICON_SVG,
+  width: 64,
+  height: 64,
+  anchorY: 32,
+};
 
 // AIS ship type codes -> human-readable categories
 function getShipTypeName(type: number | null): string | null {
@@ -396,34 +418,28 @@ const MapInner = forwardRef<MapInnerHandle, MapInnerProps>(function MapInner(
       layers.push(trailLayer);
     }
 
-    // Vessel markers (animated)
+    // Vessel icons (animated, rotated by heading)
     if (visibleLayers.vessels && vessels && vessels.size > 0) {
       const vesselArray = Array.from(vessels.values());
 
-      const vesselLayer = new ScatterplotLayer<Vessel>({
-        id: "vessel-markers",
+      const vesselLayer = new IconLayer<Vessel>({
+        id: "vessel-icons",
         data: vesselArray,
         pickable: true,
-        stroked: true,
-        filled: true,
-        radiusScale: 1,
-        radiusMinPixels: 4,
-        radiusMaxPixels: 12,
-        lineWidthMinPixels: 1,
+        getIcon: () => BOAT_ICON,
         getPosition: (d) => {
           const anim = animatedVesselPositions?.get(d.mmsi);
           return anim ? [anim[1], anim[0]] : [d.lon, d.lat];
         },
-        getRadius: (d) => {
-          return d.sog > 1 ? 80 : 50;
+        getSize: (d) => (d.sog > 1 ? 28 : 20),
+        sizeMinPixels: 12,
+        sizeMaxPixels: 36,
+        getAngle: (d) => -(d.heading > 0 ? d.heading : d.cog),
+        getColor: (d) => {
+          if (d.sog < 0.5) return [245, 158, 11, 230] as [number, number, number, number];
+          if (d.sog < 5) return [6, 182, 212, 240] as [number, number, number, number];
+          return [34, 197, 94, 250] as [number, number, number, number];
         },
-        getFillColor: (d) => {
-          if (d.sog < 0.5) return [245, 158, 11, 200] as [number, number, number, number];
-          if (d.sog < 5) return [6, 182, 212, 220] as [number, number, number, number];
-          return [34, 197, 94, 230] as [number, number, number, number];
-        },
-        getLineColor: [255, 255, 255, 120],
-        getLineWidth: 1,
         onHover: (info) => {
           if (info.object) {
             setTooltip({ type: "vessel", x: info.x, y: info.y, vessel: info.object });
@@ -433,8 +449,9 @@ const MapInner = forwardRef<MapInnerHandle, MapInnerProps>(function MapInner(
         },
         updateTriggers: {
           getPosition: [animatedVesselPositions],
-          getFillColor: [vessels],
-          getRadius: [vessels],
+          getColor: [vessels],
+          getSize: [vessels],
+          getAngle: [vessels],
         },
       });
 
@@ -447,16 +464,11 @@ const MapInner = forwardRef<MapInnerHandle, MapInnerProps>(function MapInner(
 
       const isDark = theme === "dark";
 
-      const aircraftLayer = new ScatterplotLayer<Aircraft>({
-        id: "aircraft-markers",
+      const aircraftLayer = new IconLayer<Aircraft>({
+        id: "aircraft-icons",
         data: aircraftArray,
         pickable: true,
-        stroked: true,
-        filled: true,
-        radiusScale: 1,
-        radiusMinPixels: 6,
-        radiusMaxPixels: 16,
-        lineWidthMinPixels: 2,
+        getIcon: () => PLANE_ICON,
         getPosition: (d) => {
           // Use altitude as Z coordinate so aircraft render at their actual height
           const alt = d.onGround ? 0 : (d.altitude ?? 0);
@@ -466,25 +478,26 @@ const MapInner = forwardRef<MapInnerHandle, MapInnerProps>(function MapInner(
           }
           return [d.lon, d.lat, alt];
         },
-        getRadius: (d) => {
-          if (d.onGround) return 60;
-          return d.velocity > 100 ? 120 : 80;
+        getSize: (d) => {
+          if (d.onGround) return 20;
+          return d.velocity > 100 ? 32 : 24;
         },
-        getFillColor: (d) => {
+        sizeMinPixels: 10,
+        sizeMaxPixels: 40,
+        getAngle: (d) => -(d.track ?? 0),
+        getColor: (d) => {
           // Ground aircraft: orange on dark, dark orange on light
           if (d.onGround) return isDark
-            ? [245, 158, 11, 180] as [number, number, number, number]
-            : [217, 119, 6, 220] as [number, number, number, number];
+            ? [245, 158, 11, 200] as [number, number, number, number]
+            : [217, 119, 6, 230] as [number, number, number, number];
           // Airborne: colour by altitude with strong contrast for both themes
           const alt = d.altitude ?? 0;
-          if (alt < 1000) return [220, 38, 38, 230] as [number, number, number, number];   // red — low
-          if (alt < 5000) return [168, 34, 220, 240] as [number, number, number, number];   // purple — mid
+          if (alt < 1000) return [220, 38, 38, 240] as [number, number, number, number];   // red — low
+          if (alt < 5000) return [168, 34, 220, 250] as [number, number, number, number];   // purple — mid
           return isDark
-            ? [232, 121, 249, 240] as [number, number, number, number]   // bright magenta — high (dark)
-            : [126, 34, 206, 240] as [number, number, number, number];   // deep violet — high (light)
+            ? [232, 121, 249, 250] as [number, number, number, number]   // bright magenta — high (dark)
+            : [126, 34, 206, 250] as [number, number, number, number];   // deep violet — high (light)
         },
-        getLineColor: isDark ? [255, 255, 255, 140] : [0, 0, 0, 100],
-        getLineWidth: 1.5,
         onHover: (info) => {
           if (info.object) {
             setTooltip({ type: "aircraft", x: info.x, y: info.y, aircraft: info.object });
@@ -494,9 +507,9 @@ const MapInner = forwardRef<MapInnerHandle, MapInnerProps>(function MapInner(
         },
         updateTriggers: {
           getPosition: [animatedAircraftPositions],
-          getFillColor: [aircraft, theme],
-          getRadius: [aircraft],
-          getLineColor: [theme],
+          getColor: [aircraft, theme],
+          getSize: [aircraft],
+          getAngle: [aircraft],
         },
       });
 
