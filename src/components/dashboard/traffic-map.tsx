@@ -14,7 +14,6 @@ import { useDeviceType } from "@/lib/use-device-type";
 import { useTreeLayer } from "@/lib/use-tree-layer";
 import { useParkingLayer } from "@/lib/use-parking-layer";
 import { useHospitalityLayer } from "@/lib/use-hospitality-layer";
-import { useBuildingLayer } from "@/lib/use-building-layer";
 import { useFlowLayer } from "@/lib/use-flow-layer";
 import { useStreetRoutes } from "@/lib/use-street-routes";
 import { getFlowSensorPairs } from "@/lib/flow-inference";
@@ -163,9 +162,6 @@ export const TrafficMap = forwardRef<TrafficMapHandle, TrafficMapProps>(function
 
   // Hospitality layer (cafes, restaurants, bars)
   const { venues: hospitalityVenues } = useHospitalityLayer(visibleLayers.hospitality);
-
-  // Building footprints (3D extruded buildings)
-  const { geojson: buildingGeojson } = useBuildingLayer(visibleLayers.buildings);
 
   // Street routes for flow paths — pre-fetched as soon as hourly data loads,
   // regardless of whether the flow layer is currently visible, so routes are
@@ -508,7 +504,6 @@ export const TrafficMap = forwardRef<TrafficMapHandle, TrafficMapProps>(function
                 trees={trees}
                 parkingBays={parkingBays}
                 hospitalityVenues={hospitalityVenues}
-                buildingGeojson={buildingGeojson}
                 flowTrips={flowTrips}
                 layerMode={layerMode}
                 currentHour={mode === "hourly" ? currentTime : null}

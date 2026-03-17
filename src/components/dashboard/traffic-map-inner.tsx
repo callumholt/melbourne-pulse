@@ -1,10 +1,17 @@
 "use client";
 
 import { useEffect, useRef, useState, useImperativeHandle, forwardRef, useMemo } from "react";
-import { Map as MapLibre, NavigationControl } from "maplibre-gl";
+import { Map as MapLibre, NavigationControl, addProtocol } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
+import { Protocol } from "pmtiles";
+
+// Register PMTiles protocol for 3D building vector tiles (run once)
+if (typeof window !== "undefined") {
+  const protocol = new Protocol();
+  addProtocol("pmtiles", protocol.tile.bind(protocol));
+}
 import { Deck } from "@deck.gl/core";
-import { ColumnLayer, ScatterplotLayer, PathLayer, GeoJsonLayer, IconLayer } from "@deck.gl/layers";
+import { ColumnLayer, ScatterplotLayer, PathLayer, IconLayer } from "@deck.gl/layers";
 import { HeatmapLayer } from "@deck.gl/aggregation-layers";
 import { TripsLayer } from "@deck.gl/geo-layers";
 import { LightingEffect, AmbientLight, DirectionalLight } from "@deck.gl/core";
@@ -65,8 +72,10 @@ const INITIAL_VIEW = {
 };
 
 function makeStyle(theme: "dark" | "light") {
-  // CARTO raster tile paths differ by variant
   const tilePath = theme === "dark" ? "dark_all" : "rastertiles/voyager";
+  // Building colours tuned to complement each basemap theme
+  const buildingColor = theme === "dark" ? "#2c3047" : "#ccc4b6";
+  const buildingTopColor = theme === "dark" ? "#3d4260" : "#e0d8cc";
   return {
     version: 8 as const,
     sources: {
@@ -76,6 +85,12 @@ function makeStyle(theme: "dark" | "light") {
         tileSize: 256,
         attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/">CARTO</a>',
       },
+      // OpenFreeMap vector tiles — provides OSM building heights (render_height)
+      "ofm-tiles": {
+        type: "vector" as const,
+        url: "pmtiles://https://tiles.openfreemap.org/planet",
+        attribution: '&copy; <a href="https://openfreemap.org">OpenFreeMap</a>',
+      },
     },
     layers: [
       {
@@ -84,6 +99,30 @@ function makeStyle(theme: "dark" | "light") {
         source: "carto-tiles",
         minzoom: 0,
         maxzoom: 20,
+      },
+      // 3D buildings from OSM via OpenFreeMap — hidden by default, toggled via setLayoutProperty
+      {
+        id: "buildings-3d",
+        type: "fill-extrusion" as const,
+        source: "ofm-tiles",
+        "source-layer": "building",
+        minzoom: 12,
+        paint: {
+          // Interpolate colour from base to top for depth
+          "fill-extrusion-color": [
+            "interpolate", ["linear"], ["zoom"],
+            12, buildingColor,
+            16, buildingTopColor,
+          ] as unknown as string,
+          // Use OSM render_height (pre-computed from height + building:levels tags)
+          "fill-extrusion-height": ["coalesce", ["get", "render_height"], 6] as unknown as number,
+          "fill-extrusion-base": ["coalesce", ["get", "render_min_height"], 0] as unknown as number,
+          "fill-extrusion-opacity": theme === "dark" ? 0.9 : 0.75,
+          "fill-extrusion-vertical-gradient": true as unknown as boolean,
+        },
+        layout: {
+          visibility: "none" as const,
+        },
       },
     ],
   };
@@ -279,7 +318,38 @@ const MapInner = forwardRef<MapInnerHandle, MapInnerProps>(function MapInner(
     if (!mapRef.current || theme === currentThemeRef.current) return;
     currentThemeRef.current = theme;
     mapRef.current.setStyle(makeStyle(theme));
-  }, [theme]);
+    // Reapply building visibility after style reload (setStyle wipes all layers)
+    mapRef.current.once("styledata", () => {
+      const map = mapRef.current;
+      if (map?.getLayer("buildings-3d")) {
+        map.setLayoutProperty(
+          "buildings-3d",
+          "visibility",
+          visibleLayers.buildings ? "visible" : "none",
+        );
+      }
+    });
+  }, [theme, visibleLayers.buildings]);
+
+  // Toggle 3D building layer visibility in MapLibre
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const apply = () => {
+      if (map.getLayer("buildings-3d")) {
+        map.setLayoutProperty(
+          "buildings-3d",
+          "visibility",
+          visibleLayers.buildings ? "visible" : "none",
+        );
+      }
+    };
+    if (map.isStyleLoaded()) {
+      apply();
+    } else {
+      map.once("styledata", apply);
+    }
+  }, [visibleLayers.buildings]);
 
   // Update base map opacity based on time of day
   useEffect(() => {
@@ -649,43 +719,8 @@ const MapInner = forwardRef<MapInnerHandle, MapInnerProps>(function MapInner(
       layers.push(hospitalityLayer);
     }
 
-    // Building footprints (3D extruded)
-    if (visibleLayers.buildings && buildingGeojson) {
-      const buildingLayer = new GeoJsonLayer({
-        id: "building-footprints",
-        data: buildingGeojson,
-        pickable: true,
-        filled: true,
-        extruded: true,
-        wireframe: true,
-        getElevation: (f: GeoJSON.Feature) => {
-          // Use building height if available, otherwise estimate from floors
-          const props = f.properties || {};
-          const height = props.height || props.bld_hgt || props.estimated_height;
-          if (height) return Number(height);
-          const floors = props.floors || props.storeys || props.bld_floors;
-          if (floors) return Number(floors) * 3.5;
-          return 15; // default 15m (~4 floors)
-        },
-        getFillColor: [160, 160, 180, 120],
-        getLineColor: [200, 200, 220, 80],
-        lineWidthMinPixels: 1,
-        material: {
-          ambient: 0.35,
-          diffuse: 0.6,
-          shininess: 32,
-        },
-        onHover: (info) => {
-          if (info.object) {
-            setTooltip({ type: "building", x: info.x, y: info.y, properties: info.object.properties || {} });
-          } else {
-            setTooltip((prev) => prev?.type === "building" ? null : prev);
-          }
-        },
-      });
-      // Insert buildings before other layers so they render behind
-      layers.unshift(buildingLayer);
-    }
+    // 3D buildings are rendered by MapLibre (fill-extrusion layer) not deck.gl,
+    // so that OSM height data is available. Visibility toggled via useEffect above.
 
     // Pedestrian flow layer (animated trails between sensors)
     if (visibleLayers.flow && flowTrips && flowTrips.length > 0 && currentHour != null) {
@@ -749,7 +784,7 @@ const MapInner = forwardRef<MapInnerHandle, MapInnerProps>(function MapInner(
     }
 
     deckRef.current.setProps({ layers });
-  }, [sensors, precinctNames, vessels, vesselTrails, aircraft, animatedVesselPositions, animatedAircraftPositions, trees, parkingBays, hospitalityVenues, buildingGeojson, flowTrips, currentHour, layerMode, visibleLayers, precinctFilter, pin]);
+  }, [sensors, precinctNames, vessels, vesselTrails, aircraft, animatedVesselPositions, animatedAircraftPositions, trees, parkingBays, hospitalityVenues, flowTrips, currentHour, layerMode, visibleLayers, precinctFilter, pin]);
 
   // Enable pointer events on deck canvas for hover
   useEffect(() => {
