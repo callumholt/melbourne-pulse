@@ -16,7 +16,7 @@ export interface Aircraft {
   lastUpdate: number; // timestamp ms
 }
 
-const POLL_INTERVAL = 10_000; // 10 seconds (matches OpenSky update rate)
+const POLL_INTERVAL = 30_000; // 30 seconds — anonymous OpenSky is rate-limited
 
 export function useAircraftStream(enabled: boolean) {
   const [aircraft, setAircraft] = useState<Map<string, Aircraft>>(new Map());

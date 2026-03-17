@@ -9,7 +9,21 @@ const BBOX = {
   lomax: 145.15,
 };
 
-const OPENSKY_URL = `https://opensky-network.org/api/states/all?lamin=${BBOX.lamin}&lomin=${BBOX.lomin}&lamax=${BBOX.lamax}&lomax=${BBOX.lomax}`;
+function buildUrl() {
+  const base = `https://opensky-network.org/api/states/all?lamin=${BBOX.lamin}&lomin=${BBOX.lomin}&lamax=${BBOX.lamax}&lomax=${BBOX.lomax}`;
+  return base;
+}
+
+function buildHeaders(): Record<string, string> {
+  const headers: Record<string, string> = { Accept: "application/json" };
+  const user = process.env.OPENSKY_USERNAME;
+  const pass = process.env.OPENSKY_PASSWORD;
+  if (user && pass) {
+    headers["Authorization"] =
+      "Basic " + Buffer.from(`${user}:${pass}`).toString("base64");
+  }
+  return headers;
+}
 
 interface CachedResponse {
   data: AircraftState[];
@@ -30,7 +44,9 @@ interface AircraftState {
 }
 
 let cache: CachedResponse | null = null;
-const CACHE_TTL = 10_000; // 10 seconds
+// 60s TTL — OpenSky anonymous updates every 10s but rate-limits harshly;
+// authenticated users get 10s, anonymous users should poll less aggressively.
+const CACHE_TTL = 60_000;
 
 async function fetchAircraft(): Promise<AircraftState[]> {
   // Return cached data if fresh enough
@@ -40,20 +56,18 @@ async function fetchAircraft(): Promise<AircraftState[]> {
 
   let res: Response;
   try {
-    res = await fetch(OPENSKY_URL, {
-      headers: { Accept: "application/json" },
+    res = await fetch(buildUrl(), {
+      headers: buildHeaders(),
       signal: AbortSignal.timeout(15_000),
     });
   } catch {
-    // Timeout or network error — return stale cache if available
-    if (cache) return cache.data;
-    throw new Error("OpenSky unreachable");
+    // Timeout or network error — return stale cache or empty
+    return cache?.data ?? [];
   }
 
   if (!res.ok) {
-    // Rate limited or server error — return stale cache if available
-    if (cache) return cache.data;
-    throw new Error(`OpenSky returned ${res.status}`);
+    // Rate limited (429) or server error — return stale cache or empty
+    return cache?.data ?? [];
   }
 
   const json = await res.json();
@@ -61,7 +75,6 @@ async function fetchAircraft(): Promise<AircraftState[]> {
 
   if (json.states) {
     for (const s of json.states) {
-      // Skip entries without position
       if (s[6] == null || s[5] == null) continue;
 
       states.push({
@@ -70,7 +83,7 @@ async function fetchAircraft(): Promise<AircraftState[]> {
         originCountry: s[2] ?? "",
         lat: s[6],
         lon: s[5],
-        altitude: s[13] ?? s[7] ?? null, // prefer geo_altitude, fall back to baro
+        altitude: s[13] ?? s[7] ?? null,
         onGround: s[8] ?? false,
         velocity: s[9] ?? 0,
         track: s[10] ?? 0,
@@ -84,11 +97,6 @@ async function fetchAircraft(): Promise<AircraftState[]> {
 }
 
 export async function GET() {
-  try {
-    const aircraft = await fetchAircraft();
-    return Response.json(aircraft);
-  } catch (err) {
-    console.error("OpenSky fetch error:", err);
-    return Response.json([], { status: 502 });
-  }
+  const aircraft = await fetchAircraft();
+  return Response.json(aircraft);
 }
