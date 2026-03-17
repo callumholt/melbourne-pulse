@@ -38,15 +38,20 @@ async function fetchAircraft(): Promise<AircraftState[]> {
     return cache.data;
   }
 
-  const res = await fetch(OPENSKY_URL, {
-    headers: {
-      Accept: "application/json",
-    },
-    signal: AbortSignal.timeout(8000),
-  });
+  let res: Response;
+  try {
+    res = await fetch(OPENSKY_URL, {
+      headers: { Accept: "application/json" },
+      signal: AbortSignal.timeout(15_000),
+    });
+  } catch {
+    // Timeout or network error — return stale cache if available
+    if (cache) return cache.data;
+    throw new Error("OpenSky unreachable");
+  }
 
   if (!res.ok) {
-    // If rate limited or error, return stale cache if available
+    // Rate limited or server error — return stale cache if available
     if (cache) return cache.data;
     throw new Error(`OpenSky returned ${res.status}`);
   }
