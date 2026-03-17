@@ -5,98 +5,121 @@ import { useRef, useState, useEffect } from "react";
 export type StreetRouteCache = Map<string, [number, number][]>;
 
 export interface SensorPair {
-	fromId: number;
-	toId: number;
-	fromLon: number;
-	fromLat: number;
-	toLon: number;
-	toLat: number;
+  fromId: number;
+  toId: number;
+  fromLon: number;
+  fromLat: number;
+  toLon: number;
+  toLat: number;
 }
 
-const BATCH_SIZE = 5;
+// Fetch one route at a time (sequential) with retry
+async function fetchRouteWithRetry(
+  pair: SensorPair,
+  retries = 2,
+): Promise<[string, [number, number][]] | null> {
+  const from = `${pair.fromLon},${pair.fromLat}`;
+  const to = `${pair.toLon},${pair.toLat}`;
+  const key = `${pair.fromId}-${pair.toId}`;
 
-async function fetchRoute(pair: SensorPair): Promise<[string, [number, number][]] | null> {
-	const from = `${pair.fromLon},${pair.fromLat}`;
-	const to = `${pair.toLon},${pair.toLat}`;
-	const key = `${pair.fromId}-${pair.toId}`;
-
-	try {
-		const res = await fetch(
-			`/api/routes?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
-		);
-		if (!res.ok) return null;
-		const coords: [number, number][] = await res.json();
-		return [key, coords];
-	} catch {
-		return null;
-	}
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const res = await fetch(
+        `/api/routes?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
+      );
+      if (!res.ok) {
+        // Rate limited or server error — wait longer before retry
+        if (attempt < retries) {
+          await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+          continue;
+        }
+        return null;
+      }
+      const coords: [number, number][] = await res.json();
+      if (coords.length >= 2) return [key, coords];
+      return null;
+    } catch {
+      if (attempt < retries) {
+        await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+        continue;
+      }
+      return null;
+    }
+  }
+  return null;
 }
 
 /**
  * Fetch and cache street routes for pedestrian flow sensor pairs.
  *
- * Routes are fetched in batches of up to 5 concurrent requests to avoid
- * overwhelming the OSRM demo server. The internal cache is a persistent
- * Map stored in a ref; only a snapshot of that Map is exposed as React
- * state so the component re-renders when new routes arrive.
+ * Routes are fetched sequentially with a 200ms delay between requests
+ * to respect the OSRM demo server rate limits. Failed routes are retried
+ * up to 2 times with exponential backoff. Permanently failed routes are
+ * tracked so they aren't re-attempted on subsequent renders.
  */
 export function useStreetRoutes(
-	sensorPairs: SensorPair[],
-	enabled: boolean,
+  sensorPairs: SensorPair[],
+  enabled: boolean,
 ): StreetRouteCache {
-	// Persistent accumulator — mutated in the async effect, never during render
-	const persistentCache = useRef<StreetRouteCache | null>(null);
-	if (persistentCache.current === null) {
-		persistentCache.current = new Map();
-	}
+  const persistentCache = useRef<StreetRouteCache>(new Map());
+  const failedKeys = useRef<Set<string>>(new Set());
+  const [cache, setCache] = useState<StreetRouteCache>(() => new Map());
 
-	const [cache, setCache] = useState<StreetRouteCache>(() => new Map());
+  useEffect(() => {
+    if (!enabled || sensorPairs.length === 0) return;
 
-	useEffect(() => {
-		if (!enabled || sensorPairs.length === 0) return;
+    const inner = persistentCache.current;
 
-		const inner = persistentCache.current!;
+    // Identify pairs not yet in cache and not permanently failed
+    const missing = sensorPairs.filter((p) => {
+      const key = `${p.fromId}-${p.toId}`;
+      return !inner.has(key) && !failedKeys.current.has(key);
+    });
 
-		// Identify pairs not yet in cache
-		const missing = sensorPairs.filter(
-			(p) => !inner.has(`${p.fromId}-${p.toId}`),
-		);
+    if (missing.length === 0) return;
 
-		if (missing.length === 0) return;
+    let cancelled = false;
 
-		let cancelled = false;
+    async function fetchSequentially() {
+      let newCount = 0;
 
-		async function fetchInBatches() {
-			for (let i = 0; i < missing.length; i += BATCH_SIZE) {
-				if (cancelled) break;
+      for (const pair of missing) {
+        if (cancelled) break;
 
-				const batch = missing.slice(i, i + BATCH_SIZE);
-				const results = await Promise.all(batch.map(fetchRoute));
+        const result = await fetchRouteWithRetry(pair);
 
-				if (cancelled) break;
+        if (cancelled) break;
 
-				let updated = false;
-				for (const result of results) {
-					if (result) {
-						const [key, coords] = result;
-						inner.set(key, coords);
-						updated = true;
-					}
-				}
+        if (result) {
+          const [key, coords] = result;
+          inner.set(key, coords);
+          newCount++;
+          // Publish updates every 5 successful routes so flow lines update progressively
+          if (newCount % 5 === 0) {
+            setCache(new Map(inner));
+          }
+        } else {
+          failedKeys.current.add(`${pair.fromId}-${pair.toId}`);
+        }
 
-				if (updated) {
-					// Publish a new Map snapshot so consumers see the updated entries
-					setCache(new Map(inner));
-				}
-			}
-		}
+        // Small delay between requests to avoid rate limiting
+        if (!cancelled) {
+          await new Promise((r) => setTimeout(r, 200));
+        }
+      }
 
-		fetchInBatches();
+      // Final publish for any remaining routes
+      if (newCount > 0 && !cancelled) {
+        setCache(new Map(inner));
+      }
+    }
 
-		return () => {
-			cancelled = true;
-		};
-	}, [enabled, sensorPairs]);
+    fetchSequentially();
 
-	return cache;
+    return () => {
+      cancelled = true;
+    };
+  }, [enabled, sensorPairs]);
+
+  return cache;
 }
