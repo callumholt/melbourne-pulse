@@ -5,7 +5,7 @@ import dynamic from "next/dynamic";
 import { Card, CardContent } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { format, subDays } from "date-fns";
-import { Columns3, Flame, TreePine, Ship, Users, Filter, Maximize2, Minimize2, ParkingSquare, UtensilsCrossed, Building2, Route, Plane } from "lucide-react";
+import { Columns3, Flame, TreePine, Ship, Users, Filter, Maximize2, Minimize2, ParkingSquare, UtensilsCrossed, Building2, Route, Plane, MapPin } from "lucide-react";
 import { useAisStream } from "@/lib/use-ais-stream";
 import { useAircraftStream } from "@/lib/use-aircraft-stream";
 import { useVesselTrails } from "@/lib/use-vessel-trails";
@@ -16,6 +16,9 @@ import { useParkingLayer } from "@/lib/use-parking-layer";
 import { useHospitalityLayer } from "@/lib/use-hospitality-layer";
 import { useBuildingLayer } from "@/lib/use-building-layer";
 import { useFlowLayer } from "@/lib/use-flow-layer";
+import { useStreetRoutes } from "@/lib/use-street-routes";
+import { getFlowSensorPairs } from "@/lib/flow-inference";
+import { useMapPin } from "@/lib/use-map-pin";
 import { PRECINCTS } from "@/lib/constants";
 import type { MapInnerHandle, LayerMode } from "./traffic-map-inner";
 import type { Map2DHandle } from "./traffic-map-2d";
@@ -164,8 +167,17 @@ export const TrafficMap = forwardRef<TrafficMapHandle, TrafficMapProps>(function
   // Building footprints (3D extruded buildings)
   const { geojson: buildingGeojson } = useBuildingLayer(visibleLayers.buildings);
 
-  // Pedestrian flow inference (computed from hourly data)
-  const flowTrips = useFlowLayer(visibleLayers.flow, dailySensors, hourlyIndex);
+  // Street routes for flow paths (pre-fetched from OSRM)
+  const flowSensorPairs = useMemo(() => {
+    if (!visibleLayers.flow || !hourlyIndex) return [];
+    return getFlowSensorPairs(dailySensors, hourlyIndex);
+  }, [visibleLayers.flow, dailySensors, hourlyIndex]);
+  const streetRoutes = useStreetRoutes(flowSensorPairs, visibleLayers.flow);
+
+  // Pedestrian flow inference (computed from hourly data, uses street routes when available)
+  const flowTrips = useFlowLayer(visibleLayers.flow, dailySensors, hourlyIndex, streetRoutes);
+
+  // Map pin — moved after displaySensors is defined
 
   const toggleLayer = (layer: keyof typeof visibleLayers) => {
     setVisibleLayers((prev) => ({ ...prev, [layer]: !prev[layer] }));
@@ -263,6 +275,13 @@ export const TrafficMap = forwardRef<TrafficMapHandle, TrafficMapProps>(function
     if (mode === "daily" || !hourlyIndex) return dailySensors;
     return interpolateSensors(dailySensors, hourlyIndex, currentTime);
   }, [mode, hourlyIndex, dailySensors, currentTime]);
+
+  // Map pin for pedestrian estimation at a clicked location
+  const { pin, setPin: dropPin, clearPin } = useMapPin(
+    displaySensors,
+    hourlyIndex,
+    mode === "hourly" ? currentTime : null,
+  );
 
   const togglePlay = () => {
     if (mode === "daily") {
@@ -484,6 +503,9 @@ export const TrafficMap = forwardRef<TrafficMapHandle, TrafficMapProps>(function
                 theme={theme}
                 visibleLayers={visibleLayers}
                 precinctFilter={precinctFilter}
+                pin={pin}
+                onMapClick={(lat, lon) => dropPin(lat, lon)}
+                onClearPin={clearPin}
               />
             )}
 
@@ -591,11 +613,15 @@ export const TrafficMap = forwardRef<TrafficMapHandle, TrafficMapProps>(function
                 {/* Speed control */}
                 {mode === "hourly" && (
                   <button
-                    onClick={() => setPlaySpeed((s) => s === 1 ? 2 : s === 2 ? 4 : 1)}
-                    className="shrink-0 rounded-md bg-white/10 px-2 py-1 text-xs font-medium text-white/70 backdrop-blur-sm transition-colors hover:bg-white/20 hover:text-white"
+                    onClick={() => setPlaySpeed((s) => {
+                      const speeds = [0.25, 0.5, 1, 2, 4];
+                      const idx = speeds.indexOf(s);
+                      return speeds[(idx + 1) % speeds.length];
+                    })}
+                    className="shrink-0 rounded-md bg-white/10 px-2 py-1 text-xs font-medium tabular-nums text-white/70 backdrop-blur-sm transition-colors hover:bg-white/20 hover:text-white"
                     title="Change playback speed"
                   >
-                    {playSpeed === 1 ? "1x" : playSpeed === 2 ? "2x" : "4x"}
+                    {playSpeed < 1 ? `${playSpeed}x` : `${playSpeed}x`}
                   </button>
                 )}
               </div>

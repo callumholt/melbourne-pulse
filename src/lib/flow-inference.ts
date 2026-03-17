@@ -83,6 +83,56 @@ const MAX_FLOWS_PER_HOUR = 80;
 const PATH_POINTS = 12;
 
 /**
+ * Resample an arbitrary-length coordinate path to exactly N evenly-spaced
+ * points, measured by cumulative Euclidean arc length along the path.
+ * This ensures the resulting array aligns with the timestamps array used in
+ * FlowTrip.
+ */
+function resamplePath(coords: [number, number][], n: number): [number, number][] {
+  if (coords.length === 0) return [];
+  if (coords.length === 1) return Array(n).fill(coords[0]) as [number, number][];
+
+  // Build cumulative arc-length table
+  const lengths: number[] = [0];
+  for (let i = 1; i < coords.length; i++) {
+    const dx = coords[i][0] - coords[i - 1][0];
+    const dy = coords[i][1] - coords[i - 1][1];
+    lengths.push(lengths[i - 1] + Math.sqrt(dx * dx + dy * dy));
+  }
+  const totalLength = lengths[lengths.length - 1];
+
+  if (totalLength === 0) {
+    return Array(n).fill(coords[0]) as [number, number][];
+  }
+
+  const result: [number, number][] = [];
+  let segIdx = 0;
+
+  for (let i = 0; i < n; i++) {
+    const targetLen = (i / (n - 1)) * totalLength;
+
+    // Advance segment index to the segment that contains targetLen
+    while (segIdx < lengths.length - 2 && lengths[segIdx + 1] < targetLen) {
+      segIdx++;
+    }
+
+    const segStart = lengths[segIdx];
+    const segEnd = lengths[segIdx + 1];
+    const segLen = segEnd - segStart;
+
+    const t = segLen > 0 ? (targetLen - segStart) / segLen : 0;
+    const p0 = coords[segIdx];
+    const p1 = coords[segIdx + 1];
+    result.push([
+      p0[0] + t * (p1[0] - p0[0]),
+      p0[1] + t * (p1[1] - p0[1]),
+    ]);
+  }
+
+  return result;
+}
+
+/**
  * Pre-compute all flow trips for a full 24-hour period.
  *
  * For each hour transition, identifies sources (decreasing count) and
@@ -91,6 +141,7 @@ const PATH_POINTS = 12;
 export function computeFlowTrips(
   sensors: SensorPosition[],
   hourlyIndex: HourlyIndex,
+  streetRoutes?: Map<string, [number, number][]>,
 ): FlowTrip[] {
   if (sensors.length === 0 || hourlyIndex.size === 0) return [];
 
@@ -185,12 +236,16 @@ export function computeFlowTrips(
     for (const { from, to, flow } of topFlows) {
       // Alternate curvature direction based on sensor IDs for visual variety
       const curvature = ((from.sensor_id + to.sensor_id) % 2 === 0 ? 0.2 : -0.2);
-      const path = bezierPath(
-        [from.lon, from.lat],
-        [to.lon, to.lat],
-        PATH_POINTS,
-        curvature,
-      );
+      const routeKey = `${from.sensor_id}-${to.sensor_id}`;
+      const streetPath = streetRoutes?.get(routeKey);
+      const path = streetPath && streetPath.length >= 2
+        ? resamplePath(streetPath, PATH_POINTS)
+        : bezierPath(
+            [from.lon, from.lat],
+            [to.lon, to.lat],
+            PATH_POINTS,
+            curvature,
+          );
 
       // Timestamps: spread across the hour transition with slight offset
       const startTime = hour + 0.1;
@@ -223,4 +278,96 @@ export function computeFlowTrips(
   }
 
   return allTrips;
+}
+
+/**
+ * Return the unique sensor pairs that would be used in flow computation,
+ * without generating full trip objects. Used by useStreetRoutes to
+ * pre-fetch OSRM walking routes for all relevant pairs.
+ */
+export function getFlowSensorPairs(
+  sensors: SensorPosition[],
+  hourlyIndex: HourlyIndex,
+): { fromId: number; toId: number; fromLon: number; fromLat: number; toLon: number; toLat: number }[] {
+  if (sensors.length === 0 || hourlyIndex.size === 0) return [];
+
+  // Pre-compute pairwise distances (only for nearby sensors)
+  const neighbours = new Map<number, { sensor: SensorPosition; dist: number }[]>();
+
+  for (const a of sensors) {
+    const nearby: { sensor: SensorPosition; dist: number }[] = [];
+    for (const b of sensors) {
+      if (a.sensor_id === b.sensor_id) continue;
+      const d = distanceMetres(a.lat, a.lon, b.lat, b.lon);
+      if (d <= MAX_FLOW_DISTANCE) {
+        nearby.push({ sensor: b, dist: d });
+      }
+    }
+    nearby.sort((a, b) => a.dist - b.dist);
+    neighbours.set(a.sensor_id, nearby);
+  }
+
+  const seenPairs = new Set<string>();
+  const pairs: { fromId: number; toId: number; fromLon: number; fromLat: number; toLon: number; toLat: number }[] = [];
+
+  for (let hour = 0; hour < 23; hour++) {
+    const sources: { sensor: SensorPosition; outflow: number }[] = [];
+    const sinks: { sensor: SensorPosition; inflow: number }[] = [];
+
+    for (const s of sensors) {
+      const hours = hourlyIndex.get(s.sensor_id);
+      if (!hours) continue;
+      const delta = hours[hour + 1] - hours[hour];
+
+      if (delta < -MIN_FLOW_THRESHOLD) {
+        sources.push({ sensor: s, outflow: Math.abs(delta) });
+      } else if (delta > MIN_FLOW_THRESHOLD) {
+        sinks.push({ sensor: s, inflow: delta });
+      }
+    }
+
+    if (sources.length === 0 || sinks.length === 0) continue;
+
+    const sinkSet = new Set(sinks.map((s) => s.sensor.sensor_id));
+    const sinkInflowMap = new Map(sinks.map((s) => [s.sensor.sensor_id, s.inflow]));
+
+    for (const src of sources) {
+      const srcNeighbours = neighbours.get(src.sensor.sensor_id) ?? [];
+      const nearbySinks = srcNeighbours.filter((n) => sinkSet.has(n.sensor.sensor_id));
+
+      if (nearbySinks.length === 0) continue;
+
+      let totalWeight = 0;
+      const weights: { sensor: SensorPosition; weight: number }[] = [];
+
+      for (const ns of nearbySinks) {
+        const inflow = sinkInflowMap.get(ns.sensor.sensor_id) ?? 0;
+        const w = inflow / (ns.dist * ns.dist);
+        weights.push({ sensor: ns.sensor, weight: w });
+        totalWeight += w;
+      }
+
+      if (totalWeight === 0) continue;
+
+      for (const { sensor: sinkSensor, weight } of weights) {
+        const flow = src.outflow * (weight / totalWeight);
+        if (flow < MIN_FLOW_THRESHOLD * 0.5) continue;
+
+        const pairKey = `${src.sensor.sensor_id}-${sinkSensor.sensor_id}`;
+        if (!seenPairs.has(pairKey)) {
+          seenPairs.add(pairKey);
+          pairs.push({
+            fromId: src.sensor.sensor_id,
+            toId: sinkSensor.sensor_id,
+            fromLon: src.sensor.lon,
+            fromLat: src.sensor.lat,
+            toLon: sinkSensor.lon,
+            toLat: sinkSensor.lat,
+          });
+        }
+      }
+    }
+  }
+
+  return pairs;
 }

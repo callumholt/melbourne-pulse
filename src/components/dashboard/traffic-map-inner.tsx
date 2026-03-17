@@ -16,6 +16,7 @@ import type { TreeMapPoint } from "@/lib/use-tree-layer";
 import type { ParkingBay } from "@/lib/use-parking-layer";
 import type { HospitalityVenue } from "@/lib/use-hospitality-layer";
 import type { FlowTrip } from "@/lib/flow-inference";
+import type { MapPin } from "@/lib/use-map-pin";
 
 export interface SensorData {
   sensor_id: number;
@@ -50,6 +51,9 @@ interface MapInnerProps {
   theme?: "dark" | "light";
   visibleLayers?: { sensors: boolean; vessels: boolean; trees: boolean; parking: boolean; hospitality: boolean; buildings: boolean; flow: boolean; aircraft: boolean };
   precinctFilter?: string | null;
+  pin?: MapPin | null;
+  onMapClick?: (lat: number, lon: number) => void;
+  onClearPin?: () => void;
 }
 
 const MELBOURNE_CENTER = { longitude: 144.9631, latitude: -37.8136 };
@@ -149,7 +153,7 @@ type TooltipData =
 const DEFAULT_VISIBLE = { sensors: true, vessels: true, trees: false, parking: false, hospitality: false, buildings: false, flow: false, aircraft: true };
 
 const MapInner = forwardRef<MapInnerHandle, MapInnerProps>(function MapInner(
-  { sensors, precinctNames, vessels, vesselTrails, aircraft, animatedVesselPositions, animatedAircraftPositions, trees, parkingBays, hospitalityVenues, buildingGeojson, flowTrips, layerMode = "columns", currentHour, theme = "dark", visibleLayers = DEFAULT_VISIBLE, precinctFilter },
+  { sensors, precinctNames, vessels, vesselTrails, aircraft, animatedVesselPositions, animatedAircraftPositions, trees, parkingBays, hospitalityVenues, buildingGeojson, flowTrips, layerMode = "columns", currentHour, theme = "dark", visibleLayers = DEFAULT_VISIBLE, precinctFilter, pin, onMapClick, onClearPin },
   ref
 ) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -157,6 +161,8 @@ const MapInner = forwardRef<MapInnerHandle, MapInnerProps>(function MapInner(
   const deckRef = useRef<Deck | null>(null);
   const [tooltip, setTooltip] = useState<TooltipData | null>(null);
   const currentThemeRef = useRef(theme);
+  const onMapClickRef = useRef(onMapClick);
+  onMapClickRef.current = onMapClick;
 
   // Expose flyTo via ref
   useImperativeHandle(ref, () => ({
@@ -225,6 +231,12 @@ const MapInner = forwardRef<MapInnerHandle, MapInnerProps>(function MapInner(
       new NavigationControl({ visualizePitch: true, showCompass: true, showZoom: true }),
       "top-right",
     );
+
+    // Double-click to drop a pin for pedestrian estimation
+    map.on("dblclick", (e) => {
+      e.preventDefault();
+      onMapClickRef.current?.(e.lngLat.lat, e.lngLat.lng);
+    });
 
     const deck = new Deck({
       parent: containerRef.current,
@@ -699,8 +711,45 @@ const MapInner = forwardRef<MapInnerHandle, MapInnerProps>(function MapInner(
       layers.push(flowLayer);
     }
 
+    // Dropped pin marker
+    if (pin) {
+      const pinLayer = new ScatterplotLayer({
+        id: "map-pin",
+        data: [pin],
+        pickable: false,
+        filled: true,
+        stroked: true,
+        radiusMinPixels: 8,
+        radiusMaxPixels: 14,
+        lineWidthMinPixels: 2,
+        getPosition: (d: MapPin) => [d.lon, d.lat],
+        getRadius: 50,
+        getFillColor: [239, 68, 68, 230],
+        getLineColor: [255, 255, 255, 200],
+        getLineWidth: 2,
+      });
+      layers.push(pinLayer);
+
+      // Pulsing ring around pin
+      const pinRingLayer = new ScatterplotLayer({
+        id: "map-pin-ring",
+        data: [pin],
+        pickable: false,
+        filled: false,
+        stroked: true,
+        radiusMinPixels: 16,
+        radiusMaxPixels: 28,
+        lineWidthMinPixels: 1,
+        getPosition: (d: MapPin) => [d.lon, d.lat],
+        getRadius: 100,
+        getLineColor: [239, 68, 68, 100],
+        getLineWidth: 1,
+      });
+      layers.push(pinRingLayer);
+    }
+
     deckRef.current.setProps({ layers });
-  }, [sensors, precinctNames, vessels, vesselTrails, aircraft, animatedVesselPositions, animatedAircraftPositions, trees, parkingBays, hospitalityVenues, buildingGeojson, flowTrips, currentHour, layerMode, visibleLayers, precinctFilter]);
+  }, [sensors, precinctNames, vessels, vesselTrails, aircraft, animatedVesselPositions, animatedAircraftPositions, trees, parkingBays, hospitalityVenues, buildingGeojson, flowTrips, currentHour, layerMode, visibleLayers, precinctFilter, pin]);
 
   // Enable pointer events on deck canvas for hover
   useEffect(() => {
@@ -903,6 +952,49 @@ const MapInner = forwardRef<MapInnerHandle, MapInnerProps>(function MapInner(
           </div>
         );
       })()}
+      {pin && (
+        <div className="absolute bottom-16 left-3 z-50 min-w-[220px] rounded-lg border border-border/40 bg-popover p-3 text-sm text-popover-foreground shadow-lg">
+          <div className="mb-1 flex items-center justify-between">
+            <span className="text-xs font-medium text-red-400">Dropped Pin</span>
+            <button
+              onClick={onClearPin}
+              className="text-xs text-muted-foreground hover:text-foreground"
+            >
+              Clear
+            </button>
+          </div>
+          {pin.loading ? (
+            <div className="text-xs text-muted-foreground">Loading address...</div>
+          ) : (
+            <>
+              {pin.road && <div className="font-semibold">{pin.road}</div>}
+              {pin.suburb && <div className="text-xs text-muted-foreground">{pin.suburb}</div>}
+              {!pin.road && pin.address && (
+                <div className="text-xs text-muted-foreground">{pin.address.split(",").slice(0, 2).join(",")}</div>
+              )}
+              <div className="mt-2 border-t border-border/40 pt-2">
+                {pin.estimatedCount != null ? (
+                  <>
+                    <div className="text-lg font-bold tabular-nums">
+                      ~{pin.estimatedCount.toLocaleString()}
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      estimated pedestrians{currentHour != null ? "/hr" : " (daily)"}
+                    </div>
+                  </>
+                ) : (
+                  <div className="text-xs text-muted-foreground">
+                    No sensors within 500m
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+          <div className="mt-1.5 text-[10px] text-muted-foreground/50">
+            {pin.lat.toFixed(5)}, {pin.lon.toFixed(5)}
+          </div>
+        </div>
+      )}
     </div>
   );
 });

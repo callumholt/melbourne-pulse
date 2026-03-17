@@ -2,6 +2,7 @@
 
 import { useMemo } from "react";
 import { computeFlowTrips, type FlowTrip } from "./flow-inference";
+import type { StreetRouteCache } from "./use-street-routes";
 
 interface SensorPosition {
   sensor_id: number;
@@ -21,11 +22,12 @@ export function useFlowLayer(
   enabled: boolean,
   sensors: SensorPosition[],
   hourlyIndex: HourlyIndex | null,
+  streetRoutes?: StreetRouteCache,
 ): FlowTrip[] {
   return useMemo(() => {
     if (!enabled || !hourlyIndex || hourlyIndex.size === 0 || sensors.length === 0) {
       return [];
     }
-    return computeFlowTrips(sensors, hourlyIndex);
-  }, [enabled, sensors, hourlyIndex]);
+    return computeFlowTrips(sensors, hourlyIndex, streetRoutes);
+  }, [enabled, sensors, hourlyIndex, streetRoutes]);
 }
