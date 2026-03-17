@@ -61,14 +61,14 @@ const INITIAL_VIEW = {
 };
 
 function makeStyle(theme: "dark" | "light") {
-  // dark_all: dark basemap; voyager: high-contrast light basemap with coloured roads/labels
-  const tileVariant = theme === "dark" ? "dark_all" : "voyager";
+  // CARTO raster tile paths differ by variant
+  const tilePath = theme === "dark" ? "dark_all" : "rastertiles/voyager";
   return {
     version: 8 as const,
     sources: {
       "carto-tiles": {
         type: "raster" as const,
-        tiles: [`https://a.basemaps.cartocdn.com/${tileVariant}/{z}/{x}/{y}@2x.png`],
+        tiles: [`https://a.basemaps.cartocdn.com/${tilePath}/{z}/{x}/{y}@2x.png`],
         tileSize: 256,
         attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/">CARTO</a>',
       },
