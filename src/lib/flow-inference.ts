@@ -75,12 +75,93 @@ function bezierPath(
 
 // Max distance (metres) to consider flow between sensors
 const MAX_FLOW_DISTANCE = 2000;
+// Absolute floor on a residual before a sensor counts as a source or sink
+const MIN_RESIDUAL = 20;
+// Residual must also be this fraction of the sensor's expected count
+const RELATIVE_RESIDUAL = 0.15;
 // Minimum flow magnitude to generate a trip
-const MIN_FLOW_THRESHOLD = 50;
+const MIN_TRIP_FLOW = 10;
+// Hour spans to try when classifying: widen if an hour yields nothing
+const CLASSIFY_SPANS = [1, 2, 3];
 // Max number of flow pairs per hour transition
 const MAX_FLOWS_PER_HOUR = 80;
 // Waypoints per flow path
 const PATH_POINTS = 12;
+
+interface Classified {
+  sources: { sensor: SensorPosition; outflow: number }[];
+  sinks: { sensor: SensorPosition; inflow: number }[];
+}
+
+/**
+ * Split sensors into sources and sinks for the transition starting at `hour`.
+ *
+ * Sensor counts are throughput, not occupancy, so the raw delta is dominated by
+ * the city-wide trend: in the morning ramp every sensor rises and in the evening
+ * every sensor falls, which yields all sinks or all sources and no flow at all.
+ * Instead we divide out the city-wide trend and classify on the residual — a
+ * sensor gaining less than the city average is shedding people relative to its
+ * neighbours even while its own count climbs. Residuals sum to roughly zero by
+ * construction, so both sides are populated at nearly every hour.
+ */
+function classify(
+  sensors: SensorPosition[],
+  hourlyIndex: HourlyIndex,
+  hour: number,
+  span: number,
+): Classified {
+  const sources: Classified["sources"] = [];
+  const sinks: Classified["sinks"] = [];
+
+  if (hour + span > 23) return { sources, sinks };
+
+  let totalNow = 0;
+  let totalNext = 0;
+  for (const s of sensors) {
+    const hours = hourlyIndex.get(s.sensor_id);
+    if (!hours) continue;
+    totalNow += hours[hour];
+    totalNext += hours[hour + span];
+  }
+
+  // City-wide growth factor for this transition; fall back to flat if the
+  // window is empty so a dead hour degrades to a plain delta comparison.
+  const trend = totalNow > 0 ? totalNext / totalNow : 1;
+
+  for (const s of sensors) {
+    const hours = hourlyIndex.get(s.sensor_id);
+    if (!hours) continue;
+
+    const expected = hours[hour] * trend;
+    const residual = hours[hour + span] - expected;
+    const threshold = Math.max(MIN_RESIDUAL, expected * RELATIVE_RESIDUAL);
+
+    if (residual < -threshold) {
+      sources.push({ sensor: s, outflow: Math.abs(residual) });
+    } else if (residual > threshold) {
+      sinks.push({ sensor: s, inflow: residual });
+    }
+  }
+
+  return { sources, sinks };
+}
+
+/**
+ * Classify at the narrowest span that yields both sources and sinks, widening
+ * to a 2- and then 3-hour window before giving up on the hour entirely.
+ */
+function classifyWidening(
+  sensors: SensorPosition[],
+  hourlyIndex: HourlyIndex,
+  hour: number,
+): Classified {
+  let last: Classified = { sources: [], sinks: [] };
+  for (const span of CLASSIFY_SPANS) {
+    last = classify(sensors, hourlyIndex, hour, span);
+    if (last.sources.length > 0 && last.sinks.length > 0) return last;
+  }
+  return last;
+}
 
 /**
  * Resample an arbitrary-length coordinate path to exactly N evenly-spaced
@@ -173,22 +254,7 @@ export function computeFlowTrips(
 
   // For each hour transition
   for (let hour = 0; hour < 23; hour++) {
-    const sources: { sensor: SensorPosition; outflow: number }[] = [];
-    const sinks: { sensor: SensorPosition; inflow: number }[] = [];
-
-    for (const s of sensors) {
-      const hours = hourlyIndex.get(s.sensor_id);
-      if (!hours) continue;
-      const countNow = hours[hour];
-      const countNext = hours[hour + 1];
-      const delta = countNext - countNow;
-
-      if (delta < -MIN_FLOW_THRESHOLD) {
-        sources.push({ sensor: s, outflow: Math.abs(delta) });
-      } else if (delta > MIN_FLOW_THRESHOLD) {
-        sinks.push({ sensor: s, inflow: delta });
-      }
-    }
+    const { sources, sinks } = classifyWidening(sensors, hourlyIndex, hour);
 
     if (sources.length === 0 || sinks.length === 0) continue;
 
@@ -222,7 +288,7 @@ export function computeFlowTrips(
       // Distribute outflow
       for (const { sensor: sinkSensor, weight } of weights) {
         const flow = src.outflow * (weight / totalWeight);
-        if (flow < MIN_FLOW_THRESHOLD * 0.5) continue;
+        if (flow < MIN_TRIP_FLOW) continue;
         flowPairs.push({ from: src.sensor, to: sinkSensor, flow });
         if (flow > globalMaxFlow) globalMaxFlow = flow;
       }
@@ -311,20 +377,7 @@ export function getFlowSensorPairs(
   const pairs: { fromId: number; toId: number; fromLon: number; fromLat: number; toLon: number; toLat: number }[] = [];
 
   for (let hour = 0; hour < 23; hour++) {
-    const sources: { sensor: SensorPosition; outflow: number }[] = [];
-    const sinks: { sensor: SensorPosition; inflow: number }[] = [];
-
-    for (const s of sensors) {
-      const hours = hourlyIndex.get(s.sensor_id);
-      if (!hours) continue;
-      const delta = hours[hour + 1] - hours[hour];
-
-      if (delta < -MIN_FLOW_THRESHOLD) {
-        sources.push({ sensor: s, outflow: Math.abs(delta) });
-      } else if (delta > MIN_FLOW_THRESHOLD) {
-        sinks.push({ sensor: s, inflow: delta });
-      }
-    }
+    const { sources, sinks } = classifyWidening(sensors, hourlyIndex, hour);
 
     if (sources.length === 0 || sinks.length === 0) continue;
 
@@ -351,7 +404,7 @@ export function getFlowSensorPairs(
 
       for (const { sensor: sinkSensor, weight } of weights) {
         const flow = src.outflow * (weight / totalWeight);
-        if (flow < MIN_FLOW_THRESHOLD * 0.5) continue;
+        if (flow < MIN_TRIP_FLOW) continue;
 
         const pairKey = `${src.sensor.sensor_id}-${sinkSensor.sensor_id}`;
         if (!seenPairs.has(pairKey)) {

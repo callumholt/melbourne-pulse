@@ -1,14 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getDb } from "@/lib/db";
-import { fetchPedestrianData, fetchMicroclimateData } from "@/lib/com-api";
+import { fetchPedestrianSince, fetchMicroclimateData } from "@/lib/com-api";
 import { detectAnomalies, storeAnomalies } from "@/lib/anomaly-detection";
 import { findNearestPrecinct } from "@/lib/constants";
-import { format } from "date-fns";
+import { format, subDays } from "date-fns";
 
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
 
-type PedestrianRecord = Awaited<ReturnType<typeof fetchPedestrianData>>[number];
+// CoM backfills a day's hours over the following day or two, so re-read a
+// trailing window each run rather than only today.
+const INGEST_WINDOW_DAYS = 3;
+
+type PedestrianRecord = Awaited<ReturnType<typeof fetchPedestrianSince>>[number];
 
 /**
  * Insert any sensor present in the feed but missing from the sensors table,
@@ -56,17 +60,17 @@ export async function GET(req: NextRequest) {
 
   const start = Date.now();
   const sql = getDb();
-  const today = format(new Date(), "yyyy-MM-dd");
+  const from = format(subDays(new Date(), INGEST_WINDOW_DAYS), "yyyy-MM-dd");
 
   try {
-    const records = await fetchPedestrianData(today);
+    const records = await fetchPedestrianSince(from);
 
     if (records.length === 0) {
       await sql`
         INSERT INTO ingestion_log (dataset, records_fetched, records_inserted, records_skipped, duration_ms)
         VALUES ('pedestrian_counts', 0, 0, 0, ${Date.now() - start})
       `;
-      return NextResponse.json({ message: "No records found for today", date: today });
+      return NextResponse.json({ message: "No records found", from });
     }
 
     // The counts feed occasionally introduces a sensor before it appears in our
@@ -172,7 +176,7 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({
       message: "Ingestion complete",
-      date: today,
+      from,
       fetched: records.length,
       new_sensors: newSensors,
       inserted,

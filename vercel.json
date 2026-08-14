@@ -1,6 +1,4 @@
 {
-  "crons": [
-    { "path": "/api/ingest", "schedule": "0 * * * *" },
-    { "path": "/api/digest", "schedule": "0 21 * * 0" }
-  ]
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "comment": "Scheduling lives at cron-job.org, not here: /api/ingest hourly (job 8268006) and /api/digest Sundays 21:00 UTC (job 8268007). Both authenticate with a Bearer CRON_SECRET header. Re-adding a `crons` block would double-run them."
 }

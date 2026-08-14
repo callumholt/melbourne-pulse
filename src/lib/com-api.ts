@@ -67,6 +67,30 @@ async function fetchPaginated<T>(dataset: string, params: Record<string, string>
   return results;
 }
 
+/**
+ * Fetch every count on or after `fromDate`.
+ *
+ * CoM publishes a day's hours progressively over the following day or two, so
+ * ingestion has to re-read a trailing window rather than just today — otherwise
+ * the late-arriving hours are never picked up. Uses the exports endpoint, which
+ * returns the whole window in one response instead of paginating 100 at a time.
+ */
+export async function fetchPedestrianSince(fromDate: string): Promise<ComPedestrianRecord[]> {
+  const searchParams = new URLSearchParams({
+    where: `sensing_date >= date'${fromDate}'`,
+    select: "location_id,sensing_date,hourday,pedestriancount,sensor_name,location",
+  });
+
+  const url = `${BASE_URL}/pedestrian-counting-system-monthly-counts-per-hour/exports/json?${searchParams}`;
+  const res = await fetch(url, { next: { revalidate: 0 } });
+
+  if (!res.ok) {
+    throw new Error(`CoM API error: ${res.status} ${res.statusText} for pedestrian export`);
+  }
+
+  return res.json();
+}
+
 export async function fetchPedestrianData(date: string): Promise<ComPedestrianRecord[]> {
   return fetchPaginated<ComPedestrianRecord>(
     "pedestrian-counting-system-monthly-counts-per-hour",
