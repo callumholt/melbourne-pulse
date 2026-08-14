@@ -13,6 +13,29 @@ export const PRECINCTS = [
 
 export type PrecinctId = (typeof PRECINCTS)[number]["id"];
 
+function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+export function findNearestPrecinct(lat: number, lon: number): PrecinctId {
+  let minDist = Infinity;
+  let nearest: PrecinctId = "cbd-core";
+  for (const p of PRECINCTS) {
+    const dist = haversineKm(lat, lon, p.lat, p.lon);
+    if (dist < minDist) {
+      minDist = dist;
+      nearest = p.id;
+    }
+  }
+  return nearest;
+}
+
 export const ACTIVITY_THRESHOLDS = {
   quiet: 0.3,
   moderate: 0.7,

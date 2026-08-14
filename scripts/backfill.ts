@@ -1,5 +1,6 @@
 import { neon } from "@neondatabase/serverless";
 import { format, subDays } from "date-fns";
+import { findNearestPrecinct } from "../src/lib/constants";
 
 const DATABASE_URL = process.env.DATABASE_URL!;
 const COM_API_BASE = "https://data.melbourne.vic.gov.au/api/explore/v2.1/catalog/datasets";
@@ -59,6 +60,24 @@ async function main() {
       if (records.length === 0) {
         console.log(`  No records for ${date}`);
         continue;
+      }
+
+      // Sensors missing from the sensors table would trip the foreign key and
+      // fail the entire day, so add them before inserting counts.
+      const seen = new Map<number, any>();
+      for (const r of records) if (!seen.has(r.location_id)) seen.set(r.location_id, r);
+      const known = await sql`SELECT sensor_id FROM sensors WHERE sensor_id = ANY(${[...seen.keys()]})`;
+      const knownIds = new Set(known.map((row: any) => Number(row.sensor_id)));
+      for (const [id, r] of seen) {
+        if (knownIds.has(id)) continue;
+        const lat = r.location?.lat ?? -37.8136;
+        const lon = r.location?.lon ?? 144.9631;
+        await sql`
+          INSERT INTO sensors (sensor_id, sensor_name, lat, lon, status, precinct_id)
+          VALUES (${id}, ${r.sensor_name || `Sensor ${id}`}, ${lat}, ${lon}, 'A', ${findNearestPrecinct(lat, lon)})
+          ON CONFLICT (sensor_id) DO NOTHING
+        `;
+        console.log(`  Added new sensor ${id} (${r.sensor_name})`);
       }
 
       const rows = records.map((r: any) => {

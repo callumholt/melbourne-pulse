@@ -2,10 +2,45 @@ import { NextRequest, NextResponse } from "next/server";
 import { getDb } from "@/lib/db";
 import { fetchPedestrianData, fetchMicroclimateData } from "@/lib/com-api";
 import { detectAnomalies, storeAnomalies } from "@/lib/anomaly-detection";
+import { findNearestPrecinct } from "@/lib/constants";
 import { format } from "date-fns";
 
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
+
+type PedestrianRecord = Awaited<ReturnType<typeof fetchPedestrianData>>[number];
+
+/**
+ * Insert any sensor present in the feed but missing from the sensors table,
+ * assigning it to the nearest precinct. Returns the ids that were added.
+ */
+async function registerUnknownSensors(
+  sql: ReturnType<typeof getDb>,
+  records: PedestrianRecord[],
+): Promise<number[]> {
+  const seen = new Map<number, PedestrianRecord>();
+  for (const r of records) {
+    if (!seen.has(r.location_id)) seen.set(r.location_id, r);
+  }
+
+  const ids = [...seen.keys()];
+  const known = await sql`SELECT sensor_id FROM sensors WHERE sensor_id = ANY(${ids})`;
+  const knownIds = new Set(known.map((row) => Number(row.sensor_id)));
+  const missing = ids.filter((id) => !knownIds.has(id));
+
+  for (const id of missing) {
+    const r = seen.get(id)!;
+    const lat = r.location?.lat ?? -37.8136;
+    const lon = r.location?.lon ?? 144.9631;
+    await sql`
+      INSERT INTO sensors (sensor_id, sensor_name, lat, lon, status, precinct_id)
+      VALUES (${id}, ${r.sensor_name || `Sensor ${id}`}, ${lat}, ${lon}, 'A', ${findNearestPrecinct(lat, lon)})
+      ON CONFLICT (sensor_id) DO NOTHING
+    `;
+  }
+
+  return missing;
+}
 
 export async function GET(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
@@ -33,6 +68,11 @@ export async function GET(req: NextRequest) {
       `;
       return NextResponse.json({ message: "No records found for today", date: today });
     }
+
+    // The counts feed occasionally introduces a sensor before it appears in our
+    // sensors table. Without this, the foreign key rejects the whole batch and
+    // ingestion silently stalls, so register any unknown sensor first.
+    const newSensors = await registerUnknownSensors(sql, records);
 
     // Transform using actual CoM API fields
     const rows = records.map((r) => {
@@ -134,6 +174,7 @@ export async function GET(req: NextRequest) {
       message: "Ingestion complete",
       date: today,
       fetched: records.length,
+      new_sensors: newSensors,
       inserted,
       skipped,
       duration_ms: durationMs,
