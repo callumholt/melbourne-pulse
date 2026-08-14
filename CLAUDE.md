@@ -15,7 +15,20 @@ npm run lint     # Run ESLint
 - Tailwind CSS 4 + shadcn/ui (new-york style)
 - Neon Postgres (serverless driver)
 - Recharts for data visualisation
-- Vercel deployment with cron ingestion
+- Vercel deployment; scheduling runs on cron-job.org
+
+## Scheduled jobs
+Scheduling lives at cron-job.org, not in `vercel.json` — re-adding a `crons` block
+would double-run them. Both jobs authenticate with an `Authorization: Bearer
+$CRON_SECRET` header.
+
+| Job | Endpoint | Schedule |
+| --- | --- | --- |
+| 8268006 | `/api/ingest` | hourly, :05 UTC |
+| 8268007 | `/api/digest` | Sundays 21:00 UTC |
+
+`/api/ingest` re-reads a 3-day trailing window because CoM publishes a day's
+hours progressively over the following day or two.
 
 ## Architecture
 - `src/app/` - App Router pages and API routes
