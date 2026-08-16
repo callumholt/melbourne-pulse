@@ -112,9 +112,13 @@ export async function GET(req: NextRequest) {
         v.count,
       ]);
 
+      // RETURNING is what makes the row count observable — without it the driver
+      // hands back an empty array and every run logs 0 inserted, which hides a
+      // dead ingest behind numbers that look identical to a healthy one.
       const query = `INSERT INTO pedestrian_counts (sensor_id, counted_at, hour_of_day, day_of_week, count)
          VALUES ${placeholders}
-         ON CONFLICT (sensor_id, counted_at) DO NOTHING`;
+         ON CONFLICT (sensor_id, counted_at) DO NOTHING
+         RETURNING 1`;
       const result = await sql.query(query, flatParams);
 
       inserted += result.length ?? 0;
@@ -155,7 +159,8 @@ export async function GET(req: NextRequest) {
         const microResult = await sql.query(
           `INSERT INTO microclimate_readings (site_id, site_description, type, recorded_at, value, units)
            VALUES ${placeholders}
-           ON CONFLICT (site_id, recorded_at, type) DO NOTHING`,
+           ON CONFLICT (site_id, recorded_at, type) DO NOTHING
+           RETURNING 1`,
           params,
         );
         microInserted += microResult.length ?? 0;
@@ -164,13 +169,18 @@ export async function GET(req: NextRequest) {
       console.error("Microclimate ingestion error:", microErr);
     }
 
-    // Run anomaly detection after ingestion
+    // Run anomaly detection after ingestion. Failures here must not fail the
+    // whole ingest, but they do get reported: this step silently swallowed a
+    // missing-table error on every run for months while reporting 0 anomalies,
+    // which is indistinguishable from a healthy run that found nothing.
     let anomalyCount = 0;
+    let anomalyError: string | null = null;
     try {
       const anomalies = await detectAnomalies();
       await storeAnomalies(anomalies);
       anomalyCount = anomalies.length;
     } catch (anomalyErr) {
+      anomalyError = anomalyErr instanceof Error ? anomalyErr.message : "Unknown error";
       console.error("Anomaly detection error:", anomalyErr);
     }
 
@@ -184,6 +194,7 @@ export async function GET(req: NextRequest) {
       duration_ms: durationMs,
       microclimate_inserted: microInserted,
       anomalies_detected: anomalyCount,
+      anomaly_error: anomalyError,
     });
   } catch (err) {
     const error = err instanceof Error ? err.message : "Unknown error";
