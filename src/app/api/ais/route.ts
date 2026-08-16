@@ -81,9 +81,22 @@ export async function GET(req: Request) {
 
   const stream = new ReadableStream({
     start(controller) {
+      // Safe to call after the stream is torn down; enqueueing then throws.
+      const send = (event: unknown) => {
+        try {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+        } catch {
+          // stream already closed
+        }
+      };
+
       ws = new WebSocket(AIS_WS_URL);
 
       ws.on("open", () => {
+        // The client is only "connected" once the upstream socket is up — a 200
+        // on this route just means we accepted the request.
+        send({ type: "status", state: "upstream_open" });
+
         ws!.send(
           JSON.stringify({
             APIKey: apiKey,
@@ -180,7 +193,8 @@ export async function GET(req: Request) {
         }
       });
 
-      ws.on("error", () => {
+      ws.on("error", (err) => {
+        send({ type: "status", state: "upstream_error", detail: err.message });
         try {
           controller.close();
         } catch {
@@ -188,7 +202,10 @@ export async function GET(req: Request) {
         }
       });
 
-      ws.on("close", () => {
+      ws.on("close", (code) => {
+        // aisstream closes without a close frame (1006) when it rejects the
+        // subscription — an invalid key looks exactly like this.
+        send({ type: "status", state: "upstream_closed", code });
         try {
           controller.close();
         } catch {

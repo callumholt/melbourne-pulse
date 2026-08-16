@@ -101,11 +101,46 @@ export const TrafficMap = forwardRef<TrafficMapHandle, TrafficMapProps>(function
   const { isMobile } = useDeviceType();
 
   // AIS ship tracking (disable on mobile to save resources)
-  const { vessels, connected: aisConnected, vesselCount } = useAisStream(!isMobile);
+  const { vessels, state: aisState, connected: aisConnected, vesselCount } = useAisStream(!isMobile);
   const vesselTrails = useVesselTrails(vessels, !isMobile);
 
   // Aircraft tracking
-  const { aircraft, connected: aircraftConnected, count: aircraftCount } = useAircraftStream(!isMobile);
+  const { aircraft, state: aircraftState, connected: aircraftConnected, count: aircraftCount } = useAircraftStream(!isMobile);
+
+  // Feed labels: a live feed reports its count, anything else names the fault so
+  // a broken upstream never reads as "nothing out there".
+  const aisLabel = (() => {
+    switch (aisState) {
+      case "live":
+        return `${vesselCount} vessel${vesselCount !== 1 ? "s" : ""} in Port Phillip Bay`;
+      case "no_data":
+        return "AIS feed silent — no vessel data";
+      case "unconfigured":
+        return "AIS not configured";
+      case "disconnected":
+        return "AIS disconnected — reconnecting...";
+      default:
+        return "Connecting to AIS...";
+    }
+  })();
+
+  const aircraftLabel = (() => {
+    const count = `${aircraftCount} aircraft over Melbourne`;
+    switch (aircraftState) {
+      case "live":
+        return count;
+      case "stale":
+        return `${count} (cached)`;
+      case "rate_limited":
+        return "OpenSky rate limited";
+      case "unauthorised":
+        return "OpenSky auth failed";
+      case "error":
+        return "OpenSky unavailable";
+      default:
+        return "Connecting to OpenSky...";
+    }
+  })();
 
   // Animated positions for smooth movement (dead reckoning at 60fps)
   const vesselTrackables = useMemo(() => {
@@ -529,11 +564,7 @@ export const TrafficMap = forwardRef<TrafficMapHandle, TrafficMapProps>(function
                     <span className="relative inline-flex h-2 w-2 rounded-full bg-gray-500" />
                   )}
                 </span>
-                <span className="text-xs text-white/70">
-                  {aisConnected
-                    ? `${vesselCount} vessel${vesselCount !== 1 ? "s" : ""} in Port Phillip Bay`
-                    : "Connecting to AIS..."}
-                </span>
+                <span className="text-xs text-white/70">{aisLabel}</span>
               </div>
               <div className="flex items-center gap-2 rounded-md bg-black/60 px-2.5 py-1.5 backdrop-blur-sm">
                 <span className="relative flex h-2 w-2">
@@ -546,11 +577,7 @@ export const TrafficMap = forwardRef<TrafficMapHandle, TrafficMapProps>(function
                     <span className="relative inline-flex h-2 w-2 rounded-full bg-gray-500" />
                   )}
                 </span>
-                <span className="text-xs text-white/70">
-                  {aircraftConnected
-                    ? `${aircraftCount} aircraft over Melbourne`
-                    : "Connecting to OpenSky..."}
-                </span>
+                <span className="text-xs text-white/70">{aircraftLabel}</span>
               </div>
             </div>
 

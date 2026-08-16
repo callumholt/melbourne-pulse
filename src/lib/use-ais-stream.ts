@@ -21,12 +21,28 @@ export interface Vessel {
   draught: number | null;
 }
 
+/**
+ * What the feed is actually doing. `no_data` is the important one: aisstream
+ * accepted the subscription but has sent nothing, which is indistinguishable
+ * from an empty bay unless we name it.
+ */
+export type AisFeedState =
+  | "connecting"
+  | "live"
+  | "no_data"
+  | "disconnected"
+  | "unconfigured";
+
 const STALE_TIMEOUT = 300_000; // remove vessels not seen in 5 min
+// Port Phillip is never quiet for this long; silence past it means the upstream
+// feed is not delivering, not that the bay is empty.
+const NO_DATA_TIMEOUT = 45_000;
 
 export function useAisStream(enabled: boolean) {
   const [vessels, setVessels] = useState<Map<number, Vessel>>(new Map());
-  const [connected, setConnected] = useState(false);
+  const [state, setState] = useState<AisFeedState>("connecting");
   const [vesselCount, setVesselCount] = useState(0);
+  const lastMessageRef = useRef(0);
   const vesselsRef = useRef<Map<number, Vessel>>(new Map());
   const retryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const retryDelayRef = useRef(5000);
@@ -42,11 +58,15 @@ export function useAisStream(enabled: boolean) {
 
       try {
         const res = await fetch("/api/ais", { signal: abortController.signal });
+        if (res.status === 503) {
+          // No API key configured — retrying will not help.
+          setState("unconfigured");
+          return;
+        }
         if (!res.ok || !res.body) {
           throw new Error(`AIS endpoint returned ${res.status}`);
         }
 
-        setConnected(true);
         retryDelayRef.current = 5000; // reset backoff on success
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
@@ -68,6 +88,20 @@ export function useAisStream(enabled: boolean) {
 
             try {
               const event = JSON.parse(dataLine.slice(6));
+
+              if (event.type === "status") {
+                if (event.state === "upstream_open") {
+                  // Upstream is up but has proved nothing yet.
+                  lastMessageRef.current = Date.now();
+                  setState((s) => (s === "live" ? s : "connecting"));
+                } else {
+                  setState("disconnected");
+                }
+                continue;
+              }
+
+              lastMessageRef.current = Date.now();
+              setState("live");
 
               if (event.type === "position") {
                 const existing = vesselsRef.current.get(event.mmsi);
@@ -128,7 +162,7 @@ export function useAisStream(enabled: boolean) {
         console.error("AIS stream error:", err);
       }
 
-      setConnected(false);
+      setState("disconnected");
 
       // Auto-reconnect with exponential backoff (5s, 10s, 20s, ... max 60s)
       retryRef.current = setTimeout(connect, retryDelayRef.current);
@@ -159,10 +193,18 @@ export function useAisStream(enabled: boolean) {
 
       setVessels(new Map(current));
       setVesselCount(current.size);
+
+      // Subscription accepted but nothing arriving — report it as such rather
+      // than as an empty bay.
+      setState((s) => {
+        if (s !== "live" && s !== "connecting") return s;
+        const silent = lastMessageRef.current > 0 && now - lastMessageRef.current > NO_DATA_TIMEOUT;
+        return silent ? "no_data" : s;
+      });
     }, 2000);
 
     return () => clearInterval(interval);
   }, [enabled]);
 
-  return { vessels, connected, vesselCount };
+  return { vessels, state, connected: state === "live", vesselCount };
 }
