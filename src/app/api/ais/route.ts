@@ -4,9 +4,10 @@ import { getDb } from "@/lib/db";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-// Port Phillip Bay bounding box
+// Port Phillip Bay, extended west to Corio Bay (Geelong) and south past Port
+// Phillip Heads (-38.29) to pick up ships anchored waiting to transit The Rip.
 const PORT_PHILLIP_BBOX = [
-  [-38.35, 144.4],
+  [-38.55, 144.25],
   [-37.75, 145.15],
 ];
 

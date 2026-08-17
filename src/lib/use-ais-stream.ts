@@ -34,9 +34,11 @@ export type AisFeedState =
   | "unconfigured";
 
 const STALE_TIMEOUT = 300_000; // remove vessels not seen in 5 min
-// Port Phillip is never quiet for this long; silence past it means the upstream
-// feed is not delivering, not that the bay is empty.
-const NO_DATA_TIMEOUT = 45_000;
+// Matched to STALE_TIMEOUT: aisstream's Melbourne coverage is thin (minutes can
+// pass between reports), so anything shorter flaps on normal quiet stretches.
+// Past this point every vessel has aged out anyway, so "silent" and "empty"
+// describe the same screen and the label may as well name the cause.
+const NO_DATA_TIMEOUT = STALE_TIMEOUT;
 
 export function useAisStream(enabled: boolean) {
   const [vessels, setVessels] = useState<Map<number, Vessel>>(new Map());
