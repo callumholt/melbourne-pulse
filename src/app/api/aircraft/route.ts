@@ -41,9 +41,13 @@ interface AircraftPayload {
   /** Age of the returned data in ms, or null when there is no data at all. */
   ageMs: number | null;
   authenticated: boolean;
+  /** Upstream failure cause — status code or error name, never credentials. */
+  detail?: string;
 }
 
 let token: { value: string; expiresAt: number } | null = null;
+/** Why the last token exchange failed, surfaced so a bad deploy is diagnosable. */
+let tokenError: string | null = null;
 let cache: { data: AircraftState[]; timestamp: number } | null = null;
 
 // 60s TTL. Anonymous OpenSky updates every 10s but only allows 400 credits per
@@ -77,12 +81,19 @@ async function getToken(): Promise<string | null> {
     });
 
     if (!res.ok) {
+      // The body names the cause (invalid_client, unauthorized_client...) and
+      // never echoes the secret back.
+      const body = await res.text().catch(() => "");
+      tokenError = `token ${res.status}: ${body.slice(0, 200)}`;
+      console.error("OpenSky token exchange failed:", tokenError);
       token = null;
       return null;
     }
 
     const json = await res.json();
     if (!json.access_token) {
+      tokenError = "token response had no access_token";
+      console.error("OpenSky token exchange failed:", tokenError);
       token = null;
       return null;
     }
@@ -92,8 +103,11 @@ async function getToken(): Promise<string | null> {
       value: json.access_token,
       expiresAt: Date.now() + Math.min(ttl, TOKEN_TTL),
     };
+    tokenError = null;
     return token.value;
-  } catch {
+  } catch (err) {
+    tokenError = `token request failed: ${(err as Error).name}`;
+    console.error("OpenSky token exchange failed:", tokenError);
     token = null;
     return null;
   }
@@ -124,13 +138,18 @@ function parseStates(json: unknown): AircraftState[] {
 }
 
 /** Serve whatever we last saw, labelled with why the live fetch failed. */
-function fallback(status: AircraftStatus, authenticated: boolean): AircraftPayload {
+function fallback(
+  status: AircraftStatus,
+  authenticated: boolean,
+  detail?: string,
+): AircraftPayload {
   return {
     aircraft: cache?.data ?? [],
     status,
     stale: cache != null,
     ageMs: cache ? Date.now() - cache.timestamp : null,
     authenticated,
+    detail,
   };
 }
 
@@ -141,7 +160,7 @@ async function fetchAircraft(): Promise<AircraftPayload> {
   // Credentials are set but the token exchange failed — say so rather than
   // silently degrading to the 400/day anonymous tier.
   if (credentials() && !bearer) {
-    return fallback("unauthorised", false);
+    return fallback("unauthorised", false, tokenError ?? undefined);
   }
 
   if (cache && Date.now() - cache.timestamp < CACHE_TTL) {
@@ -164,22 +183,22 @@ async function fetchAircraft(): Promise<AircraftPayload> {
       signal: AbortSignal.timeout(15_000),
     });
   } catch {
-    return fallback("error", authenticated);
+    return fallback("error", authenticated, "network");
   }
 
-  if (res.status === 429) return fallback("rate_limited", authenticated);
+  if (res.status === 429) return fallback("rate_limited", authenticated, "states 429");
   if (res.status === 401 || res.status === 403) {
     // A rejected token is worth retrying from scratch next call.
     token = null;
-    return fallback("unauthorised", authenticated);
+    return fallback("unauthorised", authenticated, `states ${res.status}`);
   }
-  if (!res.ok) return fallback("error", authenticated);
+  if (!res.ok) return fallback("error", authenticated, `states ${res.status}`);
 
   let states: AircraftState[];
   try {
     states = parseStates(await res.json());
   } catch {
-    return fallback("error", authenticated);
+    return fallback("error", authenticated, "unparseable states response");
   }
 
   cache = { data: states, timestamp: Date.now() };
